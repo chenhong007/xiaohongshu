@@ -1,8 +1,18 @@
-PyExecJS
-requests
-loguru
-python-dotenv
-retry
-openpyxl
-flask
+# Web 框架
+flask>=3.0.0
+flask-cors>=4.0.0
+flask-sqlalchemy>=3.1.0
 
+# 数据库
+sqlalchemy>=2.0.0
+
+# HTTP 请求
+requests>=2.31.0
+
+# JavaScript 执行
+PyExecJS>=1.5.1
+
+# 工具库
+loguru>=0.7.0
+retry>=0.9.2
+openpyxl>=3.1.0

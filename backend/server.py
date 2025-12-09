@@ -10,7 +10,7 @@ from flask import Flask, jsonify, request
 # Import modules from local backend structure
 try:
     from apis.xhs_pc_apis import XHS_Apis
-    from xhs_utils.common_util import init, update_env_cookies
+    from xhs_utils.common_util import init, save_cookie_to_db
     from xhs_utils.data_util import handle_note_info
     from xhs_utils.cookie_util import trans_cookies
 except ImportError as e:
@@ -197,16 +197,27 @@ def manual_cookie():
 
         # 2. Try to verify credentials by getting self info
         xhs_apis = XHS_Apis()
-        success, msg, _ = xhs_apis.get_user_self_info(cookies_str)
+        success, msg, user_info = xhs_apis.get_user_self_info(cookies_str)
         
         if not success:
              return jsonify({'detail': f"Cookie 验证失败: {msg}"}), 400
+        
+        # 3. Extract user info for saving
+        user_id = None
+        nickname = None
+        avatar = None
+        if user_info and user_info.get('data'):
+            info_data = user_info['data']
+            basic_info = info_data.get('basic_info', info_data)
+            user_id = basic_info.get('red_id') or basic_info.get('user_id') or info_data.get('red_id') or info_data.get('user_id')
+            nickname = basic_info.get('nickname') or info_data.get('nickname')
+            avatar = basic_info.get('images') or basic_info.get('avatar') or info_data.get('images') or info_data.get('avatar')
              
-        # 3. Save valid cookies
-        if update_env_cookies(cookies_str):
-            return jsonify({'success': True, 'message': 'Cookie updated successfully'})
+        # 4. Save valid cookies to database
+        if save_cookie_to_db(cookies_str, user_id, nickname, avatar):
+            return jsonify({'success': True, 'message': 'Cookie 保存成功'})
         else:
-            return jsonify({'detail': 'Failed to save cookie configuration'}), 500
+            return jsonify({'detail': 'Cookie 保存到数据库失败'}), 500
             
     except Exception as e:
         print(f"Error validating cookie: {e}")
@@ -268,14 +279,42 @@ def run_sync(account_ids):
                     continue
                 user_id = row[0]
 
-            user_url = f'https://www.xiaohongshu.com/user/profile/{user_id}'
+            # 获取账户的 xsec_token
+            with get_db() as conn:
+                cursor = conn.execute('SELECT xsec_token FROM accounts WHERE id = ?', (acc_id,))
+                token_row = cursor.fetchone()
+                account_xsec_token = token_row[0] if token_row and token_row[0] else ''
+            
+            # 如果没有 xsec_token，尝试获取
+            if not account_xsec_token:
+                print(f"No xsec_token for account {user_id}, attempting to fetch...")
+                try:
+                    success_token, msg_token, fetched_token = xhs_apis.get_user_xsec_token(user_id, cookies_str)
+                    if success_token and fetched_token:
+                        account_xsec_token = fetched_token
+                        # 保存到数据库以便后续使用
+                        with get_db() as conn:
+                            conn.execute('UPDATE accounts SET xsec_token = ? WHERE id = ?', (account_xsec_token, acc_id))
+                            conn.commit()
+                        print(f"Successfully fetched xsec_token for {user_id}")
+                    else:
+                        print(f"Could not fetch xsec_token: {msg_token}")
+                except Exception as e:
+                    print(f"Error fetching xsec_token: {e}")
+            
+            # 构建用户 URL，包含 xsec_token
+            if account_xsec_token:
+                user_url = f'https://www.xiaohongshu.com/user/profile/{user_id}?xsec_token={account_xsec_token}&xsec_source=pc_search'
+            else:
+                user_url = f'https://www.xiaohongshu.com/user/profile/{user_id}'
+                print(f"Warning: No xsec_token for account {user_id}, sync may fail")
             
             # 1. Get all notes
             success, msg, all_note_info = xhs_apis.get_user_all_notes(user_url, cookies_str)
             if not success:
                 print(f"Failed to get notes for {user_id}: {msg}")
                 with get_db() as conn:
-                    conn.execute('UPDATE accounts SET status = ? WHERE id = ?', ('failed', acc_id))
+                    conn.execute('UPDATE accounts SET status = ?, error_message = ? WHERE id = ?', ('failed', f'获取笔记列表失败: {msg}', acc_id))
                     conn.commit()
                 continue
 
@@ -287,17 +326,23 @@ def run_sync(account_ids):
             # 2. Process each note
             processed = 0
             for simple_note in all_note_info:
-                note_id = simple_note['note_id']
-                xsec_token = simple_note.get('xsec_token')
-                note_url = f"https://www.xiaohongshu.com/explore/{note_id}?xsec_token={xsec_token}"
+                note_id = simple_note.get('note_id')
+                # 优先使用笔记自带的 xsec_token，否则使用账号的
+                note_xsec_token = simple_note.get('xsec_token') or account_xsec_token
+                note_url = f"https://www.xiaohongshu.com/explore/{note_id}?xsec_token={note_xsec_token}"
                 
                 success, msg, note_detail = xhs_apis.get_note_info(note_url, cookies_str)
-                if success:
+                if success and note_detail:
                     try:
-                        note_detail = note_detail['data']['items'][0]
-                        note_detail['url'] = note_url
-                        cleaned_data = handle_note_info(note_detail)
-                        save_note_to_db(cleaned_data)
+                        # 安全访问嵌套数据，防止 NoneType 错误
+                        data = note_detail.get('data')
+                        if data and data.get('items') and len(data['items']) > 0:
+                            note_data = data['items'][0]
+                            note_data['url'] = note_url
+                            cleaned_data = handle_note_info(note_data)
+                            save_note_to_db(cleaned_data)
+                        else:
+                            print(f"Note {note_id} has no valid data")
                     except Exception as e:
                         print(f"Error parsing note {note_id}: {e}")
                 

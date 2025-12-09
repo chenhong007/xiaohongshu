@@ -102,6 +102,63 @@ class XHS_Apis():
             note_list = note_list[:require_num]
         return success, msg, note_list
 
+    def get_user_xsec_token(self, user_id: str, cookies_str: str, proxies: dict = None):
+        """
+            通过访问用户主页获取 xsec_token
+            :param user_id: 用户ID
+            :param cookies_str: cookies字符串
+            :return: (success, msg, xsec_token)
+        """
+        xsec_token = ''
+        try:
+            from xhs_utils.cookie_util import trans_cookies
+            url = f"https://www.xiaohongshu.com/user/profile/{user_id}"
+            headers = get_common_headers()
+            cookies = trans_cookies(cookies_str)
+            response = requests.get(url, headers=headers, cookies=cookies, proxies=proxies, timeout=10)
+            
+            if response.status_code != 200:
+                return False, f"请求失败，状态码: {response.status_code}", ''
+            
+            html = response.text
+            
+            # 方法1: 从 __INITIAL_STATE__ 中提取
+            import json as json_lib
+            state_match = re.search(r'window\.__INITIAL_STATE__\s*=\s*(\{.*?\})\s*</script>', html, re.DOTALL)
+            if state_match:
+                try:
+                    # 处理 undefined 为 null
+                    state_str = state_match.group(1).replace('undefined', 'null')
+                    state_data = json_lib.loads(state_str)
+                    # 尝试从不同路径获取 xsec_token
+                    if 'user' in state_data and 'userPageData' in state_data['user']:
+                        page_data = state_data['user']['userPageData']
+                        if isinstance(page_data, dict):
+                            xsec_token = page_data.get('xsecToken', '') or page_data.get('xsec_token', '')
+                except:
+                    pass
+            
+            # 方法2: 从 URL 参数或页面链接中提取
+            if not xsec_token:
+                token_match = re.search(r'xsec_token["\']?\s*[:=]\s*["\']?([A-Za-z0-9+/=_-]+)', html)
+                if token_match:
+                    xsec_token = token_match.group(1)
+            
+            # 方法3: 从 data-xsec-token 属性提取
+            if not xsec_token:
+                token_match = re.search(r'data-xsec-token=["\']([^"\']+)["\']', html)
+                if token_match:
+                    xsec_token = token_match.group(1)
+            
+            if xsec_token:
+                return True, "获取成功", xsec_token
+            else:
+                # 即使没有找到 token，也返回成功，让后续逻辑尝试不带 token 请求
+                return True, "未找到 xsec_token，将尝试直接请求", ''
+                
+        except Exception as e:
+            return False, f"获取 xsec_token 失败: {str(e)}", ''
+
     def get_user_info(self, user_id: str, cookies_str: str, proxies: dict = None):
         """
             获取用户的信息
@@ -195,30 +252,45 @@ class XHS_Apis():
     def get_user_all_notes(self, user_url: str, cookies_str: str, proxies: dict = None):
         """
            获取用户所有笔记
-           :param user_id: 你想要获取的用户的id
+           :param user_url: 用户主页 URL（包含 xsec_token）
            :param cookies_str: 你的cookies
-           返回用户的所有笔记
+           返回用户的所有笔记，每个笔记会携带 xsec_token
         """
         cursor = ''
         note_list = []
         try:
             urlParse = urllib.parse.urlparse(user_url)
             user_id = urlParse.path.split("/")[-1]
-            kvs = urlParse.query.split('&')
-            kvDist = {kv.split('=')[0]: kv.split('=')[1] for kv in kvs}
-            xsec_token = kvDist['xsec_token'] if 'xsec_token' in kvDist else ""
-            xsec_source = kvDist['xsec_source'] if 'xsec_source' in kvDist else "pc_search"
+            # 安全解析 URL 参数，处理空查询字符串的情况
+            kvDist = {}
+            if urlParse.query:
+                for kv in urlParse.query.split('&'):
+                    if '=' in kv:
+                        parts = kv.split('=', 1)
+                        kvDist[parts[0]] = parts[1] if len(parts) > 1 else ""
+            xsec_token = kvDist.get('xsec_token', "")
+            xsec_source = kvDist.get('xsec_source', "pc_search")
             while True:
                 success, msg, res_json = self.get_user_note_info(user_id, cursor, cookies_str, xsec_token, xsec_source, proxies)
                 if not success:
                     raise Exception(msg)
-                notes = res_json["data"]["notes"]
-                if 'cursor' in res_json["data"]:
-                    cursor = str(res_json["data"]["cursor"])
+                # 安全访问 data 字段，防止 NoneType 错误
+                data = res_json.get("data")
+                if data is None:
+                    raise Exception("API 返回数据格式错误: data 字段为空")
+                notes = data.get("notes", [])
+                if notes is None:
+                    notes = []
+                # 为每个笔记添加 xsec_token（来自用户页面 URL）
+                for note in notes:
+                    if 'xsec_token' not in note or not note.get('xsec_token'):
+                        note['xsec_token'] = xsec_token
+                if 'cursor' in data:
+                    cursor = str(data["cursor"])
                 else:
                     break
                 note_list.extend(notes)
-                if len(notes) == 0 or not res_json["data"]["has_more"]:
+                if len(notes) == 0 or not data.get("has_more", False):
                     break
         except Exception as e:
             success = False
@@ -257,31 +329,46 @@ class XHS_Apis():
     def get_user_all_like_note_info(self, user_url: str, cookies_str: str, proxies: dict = None):
         """
             获取用户所有喜欢笔记
-            :param user_id: 你想要获取的用户的id
+            :param user_url: 用户主页 URL（包含 xsec_token）
             :param cookies_str: 你的cookies
-            返回用户的所有喜欢笔记
+            返回用户的所有喜欢笔记，每个笔记会携带 xsec_token
         """
         cursor = ''
         note_list = []
         try:
             urlParse = urllib.parse.urlparse(user_url)
             user_id = urlParse.path.split("/")[-1]
-            kvs = urlParse.query.split('&')
-            kvDist = {kv.split('=')[0]: kv.split('=')[1] for kv in kvs}
-            xsec_token = kvDist['xsec_token'] if 'xsec_token' in kvDist else ""
-            xsec_source = kvDist['xsec_source'] if 'xsec_source' in kvDist else "pc_user"
+            # 安全解析 URL 参数
+            kvDist = {}
+            if urlParse.query:
+                for kv in urlParse.query.split('&'):
+                    if '=' in kv:
+                        parts = kv.split('=', 1)
+                        kvDist[parts[0]] = parts[1] if len(parts) > 1 else ""
+            xsec_token = kvDist.get('xsec_token', "")
+            xsec_source = kvDist.get('xsec_source', "pc_user")
             while True:
                 success, msg, res_json = self.get_user_like_note_info(user_id, cursor, cookies_str, xsec_token,
                                                                       xsec_source, proxies)
                 if not success:
                     raise Exception(msg)
-                notes = res_json["data"]["notes"]
-                if 'cursor' in res_json["data"]:
-                    cursor = str(res_json["data"]["cursor"])
+                # 安全访问 data 字段，防止 NoneType 错误
+                data = res_json.get("data")
+                if data is None:
+                    raise Exception("API 返回数据格式错误: data 字段为空")
+                notes = data.get("notes", [])
+                if notes is None:
+                    notes = []
+                # 为每个笔记添加 xsec_token
+                for note in notes:
+                    if 'xsec_token' not in note or not note.get('xsec_token'):
+                        note['xsec_token'] = xsec_token
+                if 'cursor' in data:
+                    cursor = str(data["cursor"])
                 else:
                     break
                 note_list.extend(notes)
-                if len(notes) == 0 or not res_json["data"]["has_more"]:
+                if len(notes) == 0 or not data.get("has_more", False):
                     break
         except Exception as e:
             success = False
@@ -320,31 +407,46 @@ class XHS_Apis():
     def get_user_all_collect_note_info(self, user_url: str, cookies_str: str, proxies: dict = None):
         """
             获取用户所有收藏笔记
-            :param user_id: 你想要获取的用户的id
+            :param user_url: 用户主页 URL（包含 xsec_token）
             :param cookies_str: 你的cookies
-            返回用户的所有收藏笔记
+            返回用户的所有收藏笔记，每个笔记会携带 xsec_token
         """
         cursor = ''
         note_list = []
         try:
             urlParse = urllib.parse.urlparse(user_url)
             user_id = urlParse.path.split("/")[-1]
-            kvs = urlParse.query.split('&')
-            kvDist = {kv.split('=')[0]: kv.split('=')[1] for kv in kvs}
-            xsec_token = kvDist['xsec_token'] if 'xsec_token' in kvDist else ""
-            xsec_source = kvDist['xsec_source'] if 'xsec_source' in kvDist else "pc_search"
+            # 安全解析 URL 参数
+            kvDist = {}
+            if urlParse.query:
+                for kv in urlParse.query.split('&'):
+                    if '=' in kv:
+                        parts = kv.split('=', 1)
+                        kvDist[parts[0]] = parts[1] if len(parts) > 1 else ""
+            xsec_token = kvDist.get('xsec_token', "")
+            xsec_source = kvDist.get('xsec_source', "pc_search")
             while True:
                 success, msg, res_json = self.get_user_collect_note_info(user_id, cursor, cookies_str, xsec_token,
                                                                          xsec_source, proxies)
                 if not success:
                     raise Exception(msg)
-                notes = res_json["data"]["notes"]
-                if 'cursor' in res_json["data"]:
-                    cursor = str(res_json["data"]["cursor"])
+                # 安全访问 data 字段，防止 NoneType 错误
+                data = res_json.get("data")
+                if data is None:
+                    raise Exception("API 返回数据格式错误: data 字段为空")
+                notes = data.get("notes", [])
+                if notes is None:
+                    notes = []
+                # 为每个笔记添加 xsec_token
+                for note in notes:
+                    if 'xsec_token' not in note or not note.get('xsec_token'):
+                        note['xsec_token'] = xsec_token
+                if 'cursor' in data:
+                    cursor = str(data["cursor"])
                 else:
                     break
                 note_list.extend(notes)
-                if len(notes) == 0 or not res_json["data"]["has_more"]:
+                if len(notes) == 0 or not data.get("has_more", False):
                     break
         except Exception as e:
             success = False
@@ -363,8 +465,13 @@ class XHS_Apis():
         try:
             urlParse = urllib.parse.urlparse(url)
             note_id = urlParse.path.split("/")[-1]
-            kvs = urlParse.query.split('&')
-            kvDist = {kv.split('=')[0]: kv.split('=')[1] for kv in kvs}
+            # 安全解析 URL 参数
+            kvDist = {}
+            if urlParse.query:
+                for kv in urlParse.query.split('&'):
+                    if '=' in kv:
+                        parts = kv.split('=', 1)
+                        kvDist[parts[0]] = parts[1] if len(parts) > 1 else ""
             api = f"/api/sns/web/v1/feed"
             data = {
                 "source_note_id": note_id,
@@ -376,8 +483,8 @@ class XHS_Apis():
                 "extra": {
                     "need_body_topic": "1"
                 },
-                "xsec_source": kvDist['xsec_source'] if 'xsec_source' in kvDist else "pc_search",
-                "xsec_token": kvDist['xsec_token']
+                "xsec_source": kvDist.get('xsec_source', "pc_search"),
+                "xsec_token": kvDist.get('xsec_token', "")
             }
             headers, cookies, data = generate_request_params(cookies_str, api, data, 'POST')
             response = requests.post(self.base_url + api, headers=headers, data=data, cookies=cookies, proxies=proxies)
@@ -579,6 +686,12 @@ class XHS_Apis():
             response = requests.post(self.base_url + api, headers=headers, data=data.encode('utf-8'), cookies=cookies, proxies=proxies)
             res_json = response.json()
             success, msg = res_json["success"], res_json["msg"]
+            
+            # 调试日志：打印用户数据结构
+            if success and res_json.get('data', {}).get('users'):
+                first_user = res_json['data']['users'][0]
+                logger.info(f"[DEBUG] Search user fields: {list(first_user.keys())}")
+                logger.info(f"[DEBUG] First user: {json.dumps(first_user, ensure_ascii=False)[:500]}")
         except Exception as e:
             success = False
             msg = str(e)
@@ -739,13 +852,19 @@ class XHS_Apis():
         try:
             urlParse = urllib.parse.urlparse(url)
             note_id = urlParse.path.split("/")[-1]
-            kvs = urlParse.query.split('&')
-            kvDist = {kv.split('=')[0]: kv.split('=')[1] for kv in kvs}
-            success, msg, out_comment_list = self.get_note_all_out_comment(note_id, kvDist['xsec_token'], cookies_str, proxies)
+            # 安全解析 URL 参数
+            kvDist = {}
+            if urlParse.query:
+                for kv in urlParse.query.split('&'):
+                    if '=' in kv:
+                        parts = kv.split('=', 1)
+                        kvDist[parts[0]] = parts[1] if len(parts) > 1 else ""
+            xsec_token = kvDist.get('xsec_token', "")
+            success, msg, out_comment_list = self.get_note_all_out_comment(note_id, xsec_token, cookies_str, proxies)
             if not success:
                 raise Exception(msg)
             for comment in out_comment_list:
-                success, msg, new_comment = self.get_note_all_inner_comment(comment, kvDist['xsec_token'], cookies_str, proxies)
+                success, msg, new_comment = self.get_note_all_inner_comment(comment, xsec_token, cookies_str, proxies)
                 if not success:
                     raise Exception(msg)
         except Exception as e:
