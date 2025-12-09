@@ -4,6 +4,11 @@ import { RefreshCw, CheckCircle, Circle, Trash2 } from 'lucide-react';
 export const ContentArea = ({ activeTab, searchTerm, onAddClick, refreshTrigger }) => {
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(new Set());
+
+  const filteredAccounts = accounts.filter(acc => 
+    acc.name.toLowerCase().includes(searchTerm.toLowerCase())
+  );
 
   const fetchAccounts = async () => {
     setLoading(true);
@@ -17,6 +22,24 @@ export const ContentArea = ({ activeTab, searchTerm, onAddClick, refreshTrigger 
       console.error('Failed to fetch accounts:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const toggleSelect = (id) => {
+    const newSelected = new Set(selectedIds);
+    if (newSelected.has(id)) {
+      newSelected.delete(id);
+    } else {
+      newSelected.add(id);
+    }
+    setSelectedIds(newSelected);
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedIds.size === filteredAccounts.length && filteredAccounts.length > 0) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(filteredAccounts.map(acc => acc.id)));
     }
   };
 
@@ -47,6 +70,34 @@ export const ContentArea = ({ activeTab, searchTerm, onAddClick, refreshTrigger 
       }
     } catch (error) {
       console.error('Sync failed:', error);
+    }
+  };
+
+  const handleBatchSync = async () => {
+    if (selectedIds.size === 0) {
+        // Fallback to sync all if nothing selected (or just alert)
+        // But user asked for "Batch sync selected"
+        return handleSyncAll(); 
+    }
+    
+    if (!confirm(`确定要同步选中的 ${selectedIds.size} 个博主数据吗？`)) return;
+    setLoading(true);
+    try {
+      const res = await fetch('/api/accounts/sync-batch', { 
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids: Array.from(selectedIds) })
+      });
+      if (res.ok) {
+        setTimeout(fetchAccounts, 1000);
+        setSelectedIds(new Set());
+      } else {
+        console.error('Batch sync failed');
+      }
+    } catch (error) {
+      console.error('Batch sync failed:', error);
+    } finally {
+        setLoading(false);
     }
   };
 
@@ -93,11 +144,11 @@ export const ContentArea = ({ activeTab, searchTerm, onAddClick, refreshTrigger 
                 删除
             </button>
             <button 
-                onClick={handleSyncAll}
+                onClick={selectedIds.size > 0 ? handleBatchSync : handleSyncAll}
                 className="px-4 py-2 bg-gray-100 text-gray-600 rounded hover:bg-gray-200 text-sm flex items-center gap-1"
                 disabled={loading}
             >
-                <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} /> 同步
+                <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} /> {selectedIds.size > 0 ? `同步选中 (${selectedIds.size})` : '同步全部'}
             </button>
             <button onClick={handleReset} className="px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600 text-sm flex items-center gap-1 ml-auto">
                 <Trash2 className="w-3 h-3" /> 清空数据库
@@ -109,6 +160,14 @@ export const ContentArea = ({ activeTab, searchTerm, onAddClick, refreshTrigger 
           <table className="w-full text-sm text-left">
             <thead className="text-gray-500 bg-gray-50 border-b">
               <tr>
+                <th className="p-4 w-10">
+                    <input 
+                        type="checkbox" 
+                        checked={selectedIds.size === filteredAccounts.length && filteredAccounts.length > 0} 
+                        onChange={toggleSelectAll}
+                        className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                    />
+                </th>
                 <th className="p-4">#</th>
                 <th className="p-4">头像</th>
                 <th className="p-4">名称</th>
@@ -123,13 +182,21 @@ export const ContentArea = ({ activeTab, searchTerm, onAddClick, refreshTrigger 
             <tbody>
               {filteredAccounts.length === 0 ? (
                   <tr>
-                      <td colSpan="10" className="p-8 text-center text-gray-400">
+                      <td colSpan="11" className="p-8 text-center text-gray-400">
                           {loading ? '加载中...' : '暂无数据'}
                       </td>
                   </tr>
               ) : (
-                filteredAccounts.map((account, index) => (
+                  filteredAccounts.map((account, index) => (
                     <tr key={account.id} className="border-b hover:bg-gray-50">
+                    <td className="p-4">
+                        <input 
+                            type="checkbox" 
+                            checked={selectedIds.has(account.id)} 
+                            onChange={() => toggleSelect(account.id)}
+                            className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        />
+                    </td>
                     <td className="p-4">{index + 1}</td>
                     <td className="p-4">
                         <div className="w-8 h-8 rounded-full bg-gray-200 flex items-center justify-center text-xs text-gray-500 overflow-hidden">
