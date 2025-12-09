@@ -23,6 +23,9 @@ def get_notes():
     - start_date: 自定义开始日期 (YYYY-MM-DD)
     - end_date: 自定义结束日期 (YYYY-MM-DD)
     - note_type: 笔记类型 (all/图集/视频)
+    - liked_count_min: 点赞数最小值
+    - collected_count_min: 收藏数最小值
+    - comment_count_min: 评论数最小值
     - page: 页码
     - page_size: 每页数量
     - sort_by: 排序字段
@@ -36,6 +39,12 @@ def get_notes():
     start_date_str = request.args.get('start_date', '')
     end_date_str = request.args.get('end_date', '')
     note_type = request.args.get('note_type', 'all')
+    
+    # 数值过滤参数（最小值）
+    liked_count_min = request.args.get('liked_count_min', type=int)
+    collected_count_min = request.args.get('collected_count_min', type=int)
+    comment_count_min = request.args.get('comment_count_min', type=int)
+    
     page = request.args.get('page', 1, type=int)
     page_size = request.args.get('page_size', 20, type=int)
     sort_by = request.args.get('sort_by', 'upload_time')
@@ -102,6 +111,14 @@ def get_notes():
     # 类型筛选
     if note_type != 'all':
         query = query.filter(Note.type == note_type)
+    
+    # 数值过滤（最小值）
+    if liked_count_min is not None:
+        query = query.filter(Note.liked_count >= liked_count_min)
+    if collected_count_min is not None:
+        query = query.filter(Note.collected_count >= collected_count_min)
+    if comment_count_min is not None:
+        query = query.filter(Note.comment_count >= comment_count_min)
     
     # 排序
     sort_column = getattr(Note, sort_by, Note.upload_time)

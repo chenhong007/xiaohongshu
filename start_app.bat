@@ -1,44 +1,29 @@
 @echo off
-setlocal enabledelayedexpansion
-cd /d "%~dp0"
-
-echo ==========================================
-echo       Xiaohongshu Spider & Frontend
-echo ==========================================
-
-:: 1. Skip UAC check to preserve current Conda environment
-::    (User requested using current environment and no UAC popup)
-
-:: 2. Check User Config (Cookie)
-if not exist "backend\user_config.json" (
-    echo [INFO] User config not found.
-    echo [INFO] Attempting to fetch cookies from Chrome to auto-login...
-    echo [INFO] Please ensure Chrome is open and logged in to Xiaohongshu.
-    cd backend
-    python main.py --browser_cookie Chrome --update_settings
-    cd ..
-) else (
-    echo [INFO] User config found.
-)
-
+chcp 65001 >nul
+echo ========================================
+echo   小红书采集系统启动脚本
+echo ========================================
 echo.
-echo [INFO] Launching services using current environment...
 
-:: 3. Start Backend and Frontend
-:: Using 'start' creates a new window that inherits the current environment (including Conda)
-echo [INFO] Starting Backend Server...
-start "XHS Backend" cmd /k "cd backend && python server.py"
+:: 启动后端服务
+echo [1/2] 启动后端服务...
+cd /d "%~dp0backend"
+start "XHS Backend" cmd /k "python run.py"
 
-echo [INFO] Starting Frontend...
+:: 等待后端启动
+timeout /t 3 /nobreak >nul
+
+:: 启动前端服务
+echo [2/2] 启动前端服务...
+cd /d "%~dp0"
 start "XHS Frontend" cmd /k "npm run dev"
 
 echo.
-echo ==========================================
-echo    System Started Successfully!
+echo ========================================
+echo   服务启动中...
+echo   后端地址: http://localhost:8000
+echo   前端地址: http://localhost:5173
+echo ========================================
 echo.
-echo    Frontend: http://localhost:5173
-echo    Backend:  http://localhost:8000
-echo.
-echo    You can close this launcher window.
-echo ==========================================
-pause
+echo 按任意键关闭此窗口...
+pause >nul

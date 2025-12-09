@@ -2,3 +2,4 @@ node_modules
 XHS-Downloader
 Spider_XHS
 backend/xhs_data.db
+*.pyc

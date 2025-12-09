@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { ContentArea } from './components/ContentArea';
 import { DownloadPage } from './components/DownloadPage';
+import { searchApi, accountApi } from './services';
 
 function App() {
   const [activeTab, setActiveTab] = useState('accounts');
@@ -9,42 +10,58 @@ function App() {
   const [isSearchVisible, setIsSearchVisible] = useState(false);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
 
-  const handleSearchUsers = async (query) => {
+  // 搜索用户
+  const handleSearchUsers = useCallback(async (query) => {
     try {
-      const res = await fetch(`/api/search/users?keyword=${encodeURIComponent(query)}`);
-      if (res.ok) {
-        return await res.json();
-      }
+      const result = await searchApi.searchUsers(query);
+      return Array.isArray(result) ? result : [];
     } catch (error) {
       console.error("Search failed", error);
+      return [];
     }
-    return [];
-  };
+  }, []);
 
-  const handleAddUser = async (user) => {
+  // 添加用户
+  const handleAddUser = useCallback(async (user) => {
     try {
+      // 确保 user_id 有值
+      const userId = user.id || user.user_id || user.red_id;
+      if (!userId) {
+        console.error("Missing user_id", user);
+        alert('无法添加该用户：缺少用户ID');
+        return false;
+      }
+      
       const payload = {
-        name: user.name,
-        avatar: user.image,
-        user_id: user.id || user.red_id, // Prefer ID but fallback if needed, though ID is usually what we want for API
+        name: user.name || user.red_id || userId,
+        avatar: user.image || '',
+        user_id: userId,
+        red_id: user.red_id || '',
+        xsec_token: user.xsec_token || '',  // 添加 xsec_token 用于同步数据
+        desc: user.desc || '',
+        fans: user.fans || '',
       };
       
-      const res = await fetch('/api/accounts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-
-      if (res.ok) {
-        setRefreshTrigger(prev => prev + 1);
-        // Optional: Keep search visible to add more, or close it. 
-        // User requirement: "User clicks confirm... display in right side... sync to sql"
-        // It doesn't explicitly say close, but refreshing the list is key.
-      }
+      console.log("Adding user:", payload);
+      await accountApi.add(payload);
+      setRefreshTrigger(prev => prev + 1);
+      return true;
     } catch (error) {
       console.error("Add user failed", error);
+      // 如果是重复添加，提示用户
+      if (error.status === 409) {
+        alert('该博主已添加过了');
+      } else {
+        alert(`添加失败: ${error.message || '未知错误'}`);
+      }
+      return false;
     }
-  };
+  }, []);
+
+  // 触发刷新
+  const triggerRefresh = useCallback(() => {
+    setRefreshTrigger(prev => prev + 1);
+  }, []);
 
   return (
     <div className="flex h-screen w-full bg-gray-100 font-sans">
@@ -58,32 +75,30 @@ function App() {
         onCancelSearch={() => setIsSearchVisible(false)}
       />
       <main className="flex-1 flex flex-col overflow-hidden">
-        {/* Top bar could be here, but requirement says Left Side for Navigation, Right Side for content. 
-            Search is in Sidebar as per instruction 'Left side shows search box'.
-        */}
         <div className="p-6 pb-0">
-            <h2 className="text-2xl font-bold text-gray-800">
-                {activeTab === 'accounts' && '博主管理'}
-                {activeTab === 'download' && '笔记下载'}
-                {activeTab === 'settings' && '系统设置'}
-            </h2>
+          <h2 className="text-2xl font-bold text-gray-800">
+            {activeTab === 'accounts' && '博主管理'}
+            {activeTab === 'download' && '笔记下载'}
+            {activeTab === 'settings' && '系统设置'}
+          </h2>
         </div>
         
         {activeTab === 'accounts' && (
-             <ContentArea 
-                activeTab={activeTab} 
-                searchTerm={searchTerm} 
-                onAddClick={() => setIsSearchVisible(true)}
-                refreshTrigger={refreshTrigger}
-             />
+          <ContentArea 
+            activeTab={activeTab} 
+            searchTerm={searchTerm} 
+            onAddClick={() => setIsSearchVisible(true)}
+            refreshTrigger={refreshTrigger}
+            onRefresh={triggerRefresh}
+          />
         )}
         {activeTab === 'download' && (
-             <DownloadPage />
+          <DownloadPage />
         )}
         {activeTab === 'settings' && (
-            <div className="flex-1 p-6 flex items-center justify-center text-gray-400">
-                Feature coming soon...
-            </div>
+          <div className="flex-1 p-6 flex items-center justify-center text-gray-400">
+            Feature coming soon...
+          </div>
         )}
       </main>
     </div>
@@ -91,4 +106,3 @@ function App() {
 }
 
 export default App;
-
