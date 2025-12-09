@@ -7,21 +7,19 @@ import threading
 from datetime import datetime
 from flask import Flask, jsonify, request
 
-# Adjust path to import Spider_XHS modules
-current_dir = os.path.dirname(os.path.abspath(__file__))
-spider_path = os.path.join(current_dir, '..', 'Spider_XHS')
-sys.path.append(spider_path)
-
+# Import modules from local backend structure
 try:
     from apis.xhs_pc_apis import XHS_Apis
-    from xhs_utils.common_util import init
+    from xhs_utils.common_util import init, update_env_cookies
     from xhs_utils.data_util import handle_note_info
+    from xhs_utils.cookie_util import trans_cookies
 except ImportError as e:
-    print(f"Error importing Spider_XHS: {e}")
+    print(f"Error importing modules: {e}")
     XHS_Apis = None
 
 app = Flask(__name__)
-DB_PATH = os.path.join(current_dir, 'xhs_data.db')
+# Database path relative to this file
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'xhs_data.db')
 
 def get_db():
     conn = sqlite3.connect(DB_PATH)
@@ -105,6 +103,13 @@ def sync_batch():
     if not ids:
         return jsonify({'error': 'No ids provided'}), 400
     
+    # Reset status for all batch ids
+    with get_db() as conn:
+        placeholders = ','.join('?' * len(ids))
+        sql = f'UPDATE accounts SET status = "pending", progress = 0 WHERE id IN ({placeholders})'
+        conn.execute(sql, ids)
+        conn.commit()
+
     thread = threading.Thread(target=run_sync, args=(ids,))
     thread.start()
     return jsonify({'success': True, 'message': 'Batch sync started'})
@@ -114,6 +119,11 @@ def sync_all():
     with get_db() as conn:
         rows = conn.execute('SELECT id FROM accounts').fetchall()
         ids = [row['id'] for row in rows]
+        
+        # Reset all to pending
+        if ids:
+            conn.execute('UPDATE accounts SET status = "pending", progress = 0')
+            conn.commit()
     
     thread = threading.Thread(target=run_sync, args=(ids,))
     thread.start()
@@ -126,6 +136,81 @@ def reset_db():
         conn.execute('DELETE FROM notes')
         conn.commit()
     return jsonify({'success': True})
+
+@app.route('/api/user/me', methods=['GET'])
+def get_user_me():
+    try:
+        cookies_str, _ = init()
+        if not cookies_str:
+             print("No cookies found in environment")
+             return jsonify({'is_connected': False})
+             
+        xhs_apis = XHS_Apis()
+        success, msg, user_info = xhs_apis.get_user_self_info(cookies_str)
+        
+        print(f"User info check result: success={success}, msg={msg}")
+        if user_info:
+            print(f"User info data keys: {user_info.get('data', {}).keys()}")
+        
+        if success and user_info.get('data'):
+             data = user_info['data']
+             # Try to get basic info if it exists (structure variation handling)
+             basic_info = data.get('basic_info', data)
+             
+             # Try multiple fields for nickname
+             nickname = basic_info.get('nickname') or data.get('nickname') or '未知用户'
+             
+             # Try multiple fields for avatar (images, head_photo, avatar)
+             avatar = basic_info.get('images') or basic_info.get('avatar') or basic_info.get('head_photo') or \
+                      data.get('images') or data.get('avatar') or data.get('head_photo') or ''
+                      
+             # Try multiple fields for user_id
+             user_id = basic_info.get('red_id') or basic_info.get('user_id') or \
+                       data.get('red_id') or data.get('user_id') or ''
+
+             return jsonify({
+                 'is_connected': True,
+                 'nickname': nickname,
+                 'avatar': avatar,
+                 'user_id': user_id
+             })
+        else:
+             print(f"Failed to get user info or no data. Response: {user_info}")
+             return jsonify({'is_connected': False})
+             
+    except Exception as e:
+        print(f"Error checking user login status: {e}")
+        return jsonify({'is_connected': False})
+
+@app.route('/api/cookie/manual', methods=['POST'])
+def manual_cookie():
+    data = request.json
+    cookies_str = data.get('cookies')
+    if not cookies_str:
+        return jsonify({'error': 'No cookies provided'}), 400
+
+    try:
+        # 1. Validate cookie format first
+        cookies_dict = trans_cookies(cookies_str)
+        if 'a1' not in cookies_dict:
+             return jsonify({'detail': "无效的 Cookie：缺少核心字段 'a1'，请确保复制了完整的 Cookie 字符串"}), 400
+
+        # 2. Try to verify credentials by getting self info
+        xhs_apis = XHS_Apis()
+        success, msg, _ = xhs_apis.get_user_self_info(cookies_str)
+        
+        if not success:
+             return jsonify({'detail': f"Cookie 验证失败: {msg}"}), 400
+             
+        # 3. Save valid cookies
+        if update_env_cookies(cookies_str):
+            return jsonify({'success': True, 'message': 'Cookie updated successfully'})
+        else:
+            return jsonify({'detail': 'Failed to save cookie configuration'}), 500
+            
+    except Exception as e:
+        print(f"Error validating cookie: {e}")
+        return jsonify({'detail': f"验证过程发生错误: {str(e)}"}), 500
 
 def save_note_to_db(note_data):
     with get_db() as conn:
@@ -164,6 +249,12 @@ def run_sync(account_ids):
         xhs_apis = XHS_Apis()
     except Exception as e:
         print(f"Failed to init spider: {e}")
+        # Mark all accounts as failed if init fails
+        with get_db() as conn:
+            placeholders = ','.join('?' * len(account_ids))
+            sql = f'UPDATE accounts SET status = "failed" WHERE id IN ({placeholders})'
+            conn.execute(sql, account_ids)
+            conn.commit()
         return
 
     for acc_id in account_ids:
@@ -228,6 +319,13 @@ def run_sync(account_ids):
             with get_db() as conn:
                 conn.execute('UPDATE accounts SET status = ? WHERE id = ?', ('failed', acc_id))
                 conn.commit()
+
+@app.route('/api/login', methods=['POST'])
+def login():
+    # Placeholder for login script triggering
+    # In a real scenario, this might launch a selenium script or similar
+    # For now, we rely on manual cookie input or pre-configured environment
+    return jsonify({'detail': '自动登录脚本暂未启用，请使用手动输入 Cookie 功能'}), 501
 
 if __name__ == '__main__':
     print("Starting backend server on port 8000...")

@@ -1,18 +1,34 @@
 import json
 import math
 import random
+import os
 import execjs
 from xhs_utils.cookie_util import trans_cookies
 
-try:
-    js = execjs.compile(open(r'../static/xhs_xs_xsc_56.js', 'r', encoding='utf-8').read())
-except:
-    js = execjs.compile(open(r'static/xhs_xs_xsc_56.js', 'r', encoding='utf-8').read())
+def get_static_path(filename):
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    # Try backend/static (sibling of xhs_utils)
+    path = os.path.join(current_dir, '..', 'static', filename)
+    if os.path.exists(path):
+        return path
+    # Fallback/Original paths (just in case)
+    if os.path.exists(f'static/{filename}'):
+        return f'static/{filename}'
+    if os.path.exists(f'../static/{filename}'):
+        return f'../static/{filename}'
+    raise FileNotFoundError(f"Static file {filename} not found")
 
 try:
-    xray_js = execjs.compile(open(r'../static/xhs_xray.js', 'r', encoding='utf-8').read())
-except:
-    xray_js = execjs.compile(open(r'static/xhs_xray.js', 'r', encoding='utf-8').read())
+    js = execjs.compile(open(get_static_path('xhs_xs_xsc_56.js'), 'r', encoding='utf-8').read())
+except Exception as e:
+    print(f"Error loading JS: {e}")
+    js = None
+
+try:
+    xray_js = execjs.compile(open(get_static_path('xhs_xray.js'), 'r', encoding='utf-8').read())
+except Exception as e:
+    print(f"Error loading xray JS: {e}")
+    xray_js = None
 
 def generate_x_b3_traceid(len=16):
     x_b3_traceid = ""
@@ -89,6 +105,8 @@ def generate_headers(a1, api, data='', method='POST'):
 
 def generate_request_params(cookies_str, api, data='', method='POST'):
     cookies = trans_cookies(cookies_str)
+    if 'a1' not in cookies:
+        raise ValueError("Cookie 'a1' not found in provided cookies. Please check your login status or cookie string.")
     a1 = cookies['a1']
     headers, data = generate_headers(a1, api, data, method)
     return headers, cookies, data
