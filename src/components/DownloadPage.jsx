@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Search, RefreshCw, ChevronDown, Coffee, Download as DownloadIcon, Play, Image, Video, ExternalLink, Trash2, X, Check, Calendar } from 'lucide-react';
+import { Search, RefreshCw, ChevronDown, Coffee, Download as DownloadIcon, Play, Image, Video, ExternalLink, Trash2, X, Check, Calendar, Heart, Star, MessageCircle, RotateCcw } from 'lucide-react';
 import { noteApi, accountApi } from '../services';
 
 export const DownloadPage = () => {
@@ -123,7 +123,8 @@ export const DownloadPage = () => {
     if (dataLoaded) {
       fetchNotes();
     }
-  }, [page, sortBy, sortOrder, fetchNotes, dataLoaded]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, sortBy, sortOrder]);
 
   // 刷新数据 - 重置到第一页
   const handleRefresh = () => {
@@ -136,6 +137,20 @@ export const DownloadPage = () => {
       setDataLoaded(true);
       setPage(1);
     }
+  };
+
+  // 重置筛选条件
+  const handleReset = () => {
+    setSelectedUserIds([]);
+    setTimeRange('all');
+    setCustomStartDate('');
+    setCustomEndDate('');
+    setKeyword('');
+    setMatchMode('and');
+    setNoteType('all');
+    setLikedCountMin('');
+    setCollectedCountMin('');
+    setCommentCountMin('');
   };
 
   // 博主选择相关处理
@@ -248,247 +263,227 @@ export const DownloadPage = () => {
 
   return (
     <div className="flex-1 bg-gray-50 p-6 overflow-auto flex flex-col">
-      {/* 筛选条件 */}
-      <div className="bg-white p-4 rounded-lg shadow-sm border mb-4 space-y-4">
-        {/* 第一行筛选 */}
-        <div className="flex gap-4 items-start">
-          {/* 博主选择下拉框 */}
-          <div className="w-64 relative" ref={bloggerDropdownRef}>
-            <label className="block text-xs text-gray-500 mb-1">博主选择</label>
-            <div 
-              className="w-full border rounded-md px-3 py-2 text-sm bg-white text-gray-900 cursor-pointer flex items-center justify-between hover:border-gray-400"
-              onClick={() => setBloggerDropdownOpen(!bloggerDropdownOpen)}
-            >
-              <span className={selectedUserIds.length === 0 ? 'text-gray-500' : ''}>
-                {getSelectedBloggersText()}
-              </span>
-              <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${bloggerDropdownOpen ? 'rotate-180' : ''}`} />
-            </div>
-            
-            {/* 下拉菜单 */}
-            {bloggerDropdownOpen && (
-              <div className="absolute top-full left-0 right-0 mt-1 bg-white border rounded-md shadow-lg z-50 max-h-72 overflow-hidden flex flex-col">
-                {/* 搜索框 */}
-                <div className="p-2 border-b">
-                  <div className="relative">
-                    <Search className="absolute left-2 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
-                    <input 
-                      type="text"
-                      placeholder="搜索博主..."
-                      value={bloggerSearchText}
-                      onChange={(e) => setBloggerSearchText(e.target.value)}
-                      className="w-full border rounded px-8 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-red-500"
-                      onClick={(e) => e.stopPropagation()}
-                    />
-                    {bloggerSearchText && (
-                      <X 
-                        className="absolute right-2 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400 cursor-pointer hover:text-gray-600"
-                        onClick={(e) => { e.stopPropagation(); setBloggerSearchText(''); }}
+      {/* 筛选条件 - 新版紧凑设计 */}
+      <div className="bg-white p-5 rounded-lg shadow-sm border mb-4">
+        <div className="flex flex-col gap-4">
+          {/* 第一行：主要筛选条件 */}
+          <div className="flex flex-wrap items-center gap-3">
+            {/* 博主选择 */}
+            <div className="w-56 relative z-20" ref={bloggerDropdownRef}>
+              <div 
+                className="w-full border rounded-md px-3 py-2 text-sm bg-white text-gray-900 cursor-pointer flex items-center justify-between hover:border-red-400 transition-colors"
+                onClick={() => setBloggerDropdownOpen(!bloggerDropdownOpen)}
+              >
+                <span className={`truncate ${selectedUserIds.length === 0 ? 'text-gray-500' : 'text-gray-900'}`}>
+                  {getSelectedBloggersText()}
+                </span>
+                <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${bloggerDropdownOpen ? 'rotate-180' : ''}`} />
+              </div>
+              
+              {/* 下拉菜单 */}
+              {bloggerDropdownOpen && (
+                <div className="absolute top-full left-0 right-0 mt-1 bg-white border rounded-md shadow-lg z-50 max-h-72 overflow-hidden flex flex-col">
+                  <div className="p-2 border-b">
+                    <div className="relative">
+                      <Search className="absolute left-2 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
+                      <input 
+                        type="text"
+                        placeholder="搜索博主..."
+                        value={bloggerSearchText}
+                        onChange={(e) => setBloggerSearchText(e.target.value)}
+                        className="w-full border rounded px-8 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-red-500"
+                        onClick={(e) => e.stopPropagation()}
                       />
+                      {bloggerSearchText && (
+                        <X 
+                          className="absolute right-2 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400 cursor-pointer hover:text-gray-600"
+                          onClick={(e) => { e.stopPropagation(); setBloggerSearchText(''); }}
+                        />
+                      )}
+                    </div>
+                  </div>
+                  
+                  <div 
+                    className={`px-3 py-2 cursor-pointer flex items-center gap-2 hover:bg-gray-50 border-b ${selectedUserIds.length === 0 ? 'bg-red-50 text-red-600' : ''}`}
+                    onClick={(e) => { e.stopPropagation(); selectAllBloggers(); }}
+                  >
+                    <div className={`w-4 h-4 border rounded flex items-center justify-center ${selectedUserIds.length === 0 ? 'bg-red-500 border-red-500' : 'border-gray-300'}`}>
+                      {selectedUserIds.length === 0 && <Check className="w-3 h-3 text-white" />}
+                    </div>
+                    <span className="text-sm font-medium">全部博主</span>
+                  </div>
+                  
+                  <div className="overflow-y-auto flex-1">
+                    {filteredAccounts.length === 0 ? (
+                      <div className="px-3 py-4 text-center text-gray-400 text-sm">
+                        {bloggerSearchText ? '未找到匹配的博主' : '暂无博主数据'}
+                      </div>
+                    ) : (
+                      filteredAccounts.map(acc => (
+                        <div 
+                          key={acc.id}
+                          className={`px-3 py-2 cursor-pointer flex items-center gap-2 hover:bg-gray-50 ${selectedUserIds.includes(acc.user_id) ? 'bg-red-50' : ''}`}
+                          onClick={(e) => { e.stopPropagation(); toggleBloggerSelect(acc.user_id); }}
+                        >
+                          <div className={`w-4 h-4 border rounded flex items-center justify-center ${selectedUserIds.includes(acc.user_id) ? 'bg-red-500 border-red-500' : 'border-gray-300'}`}>
+                            {selectedUserIds.includes(acc.user_id) && <Check className="w-3 h-3 text-white" />}
+                          </div>
+                          <div className="w-6 h-6 rounded-full bg-gray-200 overflow-hidden flex-shrink-0">
+                            {acc.avatar && <img src={acc.avatar} alt="" className="w-full h-full object-cover" />}
+                          </div>
+                          <span className="text-sm truncate">{acc.name || acc.user_id}</span>
+                        </div>
+                      ))
                     )}
                   </div>
                 </div>
-                
-                {/* 全部博主选项 */}
-                <div 
-                  className={`px-3 py-2 cursor-pointer flex items-center gap-2 hover:bg-gray-50 border-b ${selectedUserIds.length === 0 ? 'bg-red-50 text-red-600' : ''}`}
-                  onClick={(e) => { e.stopPropagation(); selectAllBloggers(); }}
-                >
-                  <div className={`w-4 h-4 border rounded flex items-center justify-center ${selectedUserIds.length === 0 ? 'bg-red-500 border-red-500' : 'border-gray-300'}`}>
-                    {selectedUserIds.length === 0 && <Check className="w-3 h-3 text-white" />}
-                  </div>
-                  <span className="text-sm font-medium">全部博主</span>
-                </div>
-                
-                {/* 博主列表 */}
-                <div className="overflow-y-auto flex-1">
-                  {filteredAccounts.length === 0 ? (
-                    <div className="px-3 py-4 text-center text-gray-400 text-sm">
-                      {bloggerSearchText ? '未找到匹配的博主' : '暂无博主数据'}
-                    </div>
-                  ) : (
-                    filteredAccounts.map(acc => (
-                      <div 
-                        key={acc.id}
-                        className={`px-3 py-2 cursor-pointer flex items-center gap-2 hover:bg-gray-50 ${selectedUserIds.includes(acc.user_id) ? 'bg-red-50' : ''}`}
-                        onClick={(e) => { e.stopPropagation(); toggleBloggerSelect(acc.user_id); }}
-                      >
-                        <div className={`w-4 h-4 border rounded flex items-center justify-center ${selectedUserIds.includes(acc.user_id) ? 'bg-red-500 border-red-500' : 'border-gray-300'}`}>
-                          {selectedUserIds.includes(acc.user_id) && <Check className="w-3 h-3 text-white" />}
-                        </div>
-                        <div className="w-6 h-6 rounded-full bg-gray-200 overflow-hidden flex-shrink-0">
-                          {acc.avatar && <img src={acc.avatar} alt="" className="w-full h-full object-cover" />}
-                        </div>
-                        <span className="text-sm truncate">{acc.name || acc.user_id}</span>
-                      </div>
-                    ))
-                  )}
-                </div>
-                
-                {/* 已选中提示 */}
-                {selectedUserIds.length > 0 && (
-                  <div className="px-3 py-2 border-t bg-gray-50 flex items-center justify-between">
-                    <span className="text-xs text-gray-500">已选择 {selectedUserIds.length} 位博主</span>
-                    <button 
-                      className="text-xs text-red-500 hover:text-red-600"
-                      onClick={(e) => { e.stopPropagation(); selectAllBloggers(); }}
-                    >
-                      清除选择
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-          
-          {/* 时间范围 */}
-          <div className="w-40">
-            <label className="block text-xs text-gray-500 mb-1">时间范围</label>
-            <div className="relative">
-              <select 
-                value={timeRange}
-                onChange={(e) => setTimeRange(e.target.value)}
-                className="w-full border rounded-md px-3 py-2 text-sm appearance-none bg-white text-gray-900"
-              >
-                <option value="all">全部时间</option>
-                <option value="day">最近1天</option>
-                <option value="week">最近1周</option>
-                <option value="month">最近1月</option>
-                <option value="custom">自定义时间</option>
-              </select>
-              <ChevronDown className="absolute right-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+              )}
             </div>
-          </div>
-          
-          {/* 自定义时间范围 */}
-          {timeRange === 'custom' && (
-            <>
-              <div className="w-40">
-                <label className="block text-xs text-gray-500 mb-1">开始日期</label>
-                <div className="relative">
-                  <input 
-                    type="date"
-                    value={customStartDate}
-                    onChange={(e) => setCustomStartDate(e.target.value)}
-                    className="w-full border rounded-md px-3 py-2 text-sm bg-white text-gray-900"
-                  />
-                </div>
-              </div>
-              <div className="w-40">
-                <label className="block text-xs text-gray-500 mb-1">结束日期</label>
-                <div className="relative">
-                  <input 
-                    type="date"
-                    value={customEndDate}
-                    onChange={(e) => setCustomEndDate(e.target.value)}
-                    className="w-full border rounded-md px-3 py-2 text-sm bg-white text-gray-900"
-                  />
-                </div>
-              </div>
-            </>
-          )}
-          
-          <div className="w-36">
-            <label className="block text-xs text-gray-500 mb-1">笔记类型</label>
-            <div className="relative">
+
+            {/* 笔记类型 */}
+            <div className="w-32">
               <select 
                 value={noteType}
                 onChange={(e) => setNoteType(e.target.value)}
-                className="w-full border rounded-md px-3 py-2 text-sm appearance-none bg-white text-gray-900"
+                className="w-full border rounded-md px-3 py-2 text-sm bg-white text-gray-900 focus:outline-none focus:ring-1 focus:ring-red-500 hover:border-red-400 transition-colors"
               >
                 <option value="all">全部类型</option>
                 <option value="图集">图集</option>
                 <option value="视频">视频</option>
               </select>
-              <ChevronDown className="absolute right-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
             </div>
-          </div>
-        </div>
 
-        {/* 第二行筛选 */}
-        <div className="flex gap-4 items-end">
-          <div className="flex-1">
-            <label className="block text-xs text-gray-500 mb-1">标题搜索 (多个关键词用空格分隔)</label>
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
-              <input 
-                type="text" 
-                placeholder="输入标题关键词"
-                value={keyword}
-                onChange={(e) => setKeyword(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleRefresh()}
-                className="w-full border rounded-md pl-9 pr-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-red-500"
-              />
+            {/* 时间范围 */}
+            <div className="w-36">
+              <select 
+                value={timeRange}
+                onChange={(e) => setTimeRange(e.target.value)}
+                className="w-full border rounded-md px-3 py-2 text-sm bg-white text-gray-900 focus:outline-none focus:ring-1 focus:ring-red-500 hover:border-red-400 transition-colors"
+              >
+                <option value="all">全部时间</option>
+                <option value="day">最近1天</option>
+                <option value="week">最近1周</option>
+                <option value="month">最近1月</option>
+                <option value="custom">自定义...</option>
+              </select>
             </div>
-          </div>
-          
-          <div className="w-48">
-            <label className="block text-xs text-gray-500 mb-1">匹配模式</label>
-            <div className="relative">
+
+            {/* 关键词搜索 + 匹配模式 */}
+            <div className="flex-1 min-w-[280px] flex shadow-sm rounded-md">
+              <div className="relative flex-1">
+                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                  <Search className="h-4 w-4 text-gray-400" />
+                </div>
+                <input 
+                  type="text" 
+                  placeholder="标题/内容关键词..."
+                  value={keyword}
+                  onChange={(e) => setKeyword(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleRefresh()}
+                  className="w-full border border-r-0 rounded-l-md pl-9 pr-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-red-500 hover:border-red-400 transition-colors z-10 relative"
+                />
+              </div>
               <select 
                 value={matchMode}
                 onChange={(e) => setMatchMode(e.target.value)}
-                className="w-full border rounded-md px-3 py-2 text-sm appearance-none bg-white text-gray-900"
+                className="border rounded-r-md px-3 py-2 text-sm bg-gray-50 text-gray-600 focus:outline-none focus:ring-1 focus:ring-red-500 border-l-gray-200 hover:bg-gray-100 transition-colors"
+                title="关键词匹配模式"
               >
-                <option value="and">AND (所有关键词)</option>
-                <option value="or">OR (任意关键词)</option>
+                <option value="and">AND</option>
+                <option value="or">OR</option>
               </select>
-              <ChevronDown className="absolute right-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
             </div>
           </div>
-        </div>
-        
-        {/* 第三行筛选 - 数值过滤 */}
-        <div className="flex gap-4 items-end flex-wrap">
-          {/* 点赞数过滤 */}
-          <div className="w-28">
-            <label className="block text-xs text-gray-500 mb-1">点赞数 ≥</label>
-            <input 
-              type="number"
-              min="0"
-              placeholder="最小值"
-              value={likedCountMin}
-              onChange={(e) => setLikedCountMin(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleRefresh()}
-              className="w-full border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-red-500"
-            />
+
+          {/* 第二行：数据指标 & 操作 */}
+          <div className="flex flex-wrap items-center justify-between gap-4 border-t pt-4 border-dashed border-gray-100">
+            <div className="flex flex-wrap items-center gap-3">
+              {/* 自定义时间选择器 (仅当选中自定义时显示) */}
+              {timeRange === 'custom' && (
+                <div className="flex items-center gap-2 bg-gray-50 px-3 py-1.5 rounded-md border text-sm mr-2 animate-in fade-in slide-in-from-left-2 duration-200">
+                  <Calendar className="w-3.5 h-3.5 text-gray-500" />
+                  <input 
+                    type="date"
+                    value={customStartDate}
+                    onChange={(e) => setCustomStartDate(e.target.value)}
+                    className="bg-transparent border-none p-0 text-gray-700 focus:ring-0 text-sm w-28"
+                  />
+                  <span className="text-gray-400">-</span>
+                  <input 
+                    type="date"
+                    value={customEndDate}
+                    onChange={(e) => setCustomEndDate(e.target.value)}
+                    className="bg-transparent border-none p-0 text-gray-700 focus:ring-0 text-sm w-28"
+                  />
+                </div>
+              )}
+
+              {/* 数据指标 */}
+              <div className="flex items-center gap-2">
+                <div className="relative group">
+                  <div className="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none">
+                    <Heart className="h-3.5 w-3.5 text-gray-400 group-hover:text-red-400 transition-colors" />
+                  </div>
+                  <input 
+                    type="number"
+                    min="0"
+                    placeholder="点赞 ≥"
+                    value={likedCountMin}
+                    onChange={(e) => setLikedCountMin(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleRefresh()}
+                    className="pl-8 w-24 border rounded-md py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-red-500 hover:border-red-400 transition-colors"
+                  />
+                </div>
+                <div className="relative group">
+                  <div className="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none">
+                    <Star className="h-3.5 w-3.5 text-gray-400 group-hover:text-yellow-400 transition-colors" />
+                  </div>
+                  <input 
+                    type="number"
+                    min="0"
+                    placeholder="收藏 ≥"
+                    value={collectedCountMin}
+                    onChange={(e) => setCollectedCountMin(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleRefresh()}
+                    className="pl-8 w-24 border rounded-md py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-red-500 hover:border-red-400 transition-colors"
+                  />
+                </div>
+                <div className="relative group">
+                  <div className="absolute inset-y-0 left-0 pl-2.5 flex items-center pointer-events-none">
+                    <MessageCircle className="h-3.5 w-3.5 text-gray-400 group-hover:text-blue-400 transition-colors" />
+                  </div>
+                  <input 
+                    type="number"
+                    min="0"
+                    placeholder="评论 ≥"
+                    value={commentCountMin}
+                    onChange={(e) => setCommentCountMin(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleRefresh()}
+                    className="pl-8 w-24 border rounded-md py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-red-500 hover:border-red-400 transition-colors"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* 操作按钮 */}
+            <div className="flex items-center gap-3 ml-auto">
+              <button 
+                onClick={handleReset}
+                className="text-gray-500 hover:text-gray-700 text-sm px-2 py-1.5 flex items-center gap-1 hover:bg-gray-100 rounded transition-colors"
+                title="重置所有筛选条件"
+              >
+                <RotateCcw className="w-3.5 h-3.5" /> 重置
+              </button>
+              <button 
+                onClick={handleRefresh}
+                disabled={loading}
+                className="px-5 py-2 bg-red-500 text-white rounded-md hover:bg-red-600 text-sm flex items-center gap-1.5 shadow-sm transition-all hover:shadow disabled:opacity-70 disabled:cursor-not-allowed"
+              >
+                {loading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+                查询笔记
+              </button>
+            </div>
           </div>
-          
-          {/* 收藏数过滤 */}
-          <div className="w-28">
-            <label className="block text-xs text-gray-500 mb-1">收藏数 ≥</label>
-            <input 
-              type="number"
-              min="0"
-              placeholder="最小值"
-              value={collectedCountMin}
-              onChange={(e) => setCollectedCountMin(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleRefresh()}
-              className="w-full border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-red-500"
-            />
-          </div>
-          
-          {/* 评论数过滤 */}
-          <div className="w-28">
-            <label className="block text-xs text-gray-500 mb-1">评论数 ≥</label>
-            <input 
-              type="number"
-              min="0"
-              placeholder="最小值"
-              value={commentCountMin}
-              onChange={(e) => setCommentCountMin(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleRefresh()}
-              className="w-full border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-red-500"
-            />
-          </div>
-          
-          <button 
-            onClick={handleRefresh}
-            disabled={loading}
-            className="px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600 text-sm flex items-center gap-1 h-[38px] disabled:opacity-50"
-          >
-            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> 刷新数据
-          </button>
         </div>
       </div>
 
