@@ -7,8 +7,11 @@
 - **博主管理**: 添加、删除、批量导入/导出博主账号
 - **笔记采集**: 自动采集博主的所有笔记数据
 - **笔记下载**: 支持筛选、搜索、排序和导出笔记
-- **Cookie 管理**: 支持手动添加小红书 Cookie
+- **Cookie 管理**: 支持手动添加小红书 Cookie，加密存储和传输
+- **运行时长统计**: 记录 Cookie 有效运行时长，失效后显示历史记录
 - **实时进度**: 采集任务实时进度显示
+- **Docker 部署**: 支持一键 Docker 容器化部署
+- **SSL/HTTPS**: 支持 Let's Encrypt 自动证书申请和续期
 
 ## 🏗️ 项目架构
 
@@ -27,14 +30,17 @@ xiaohongshu/
 │   │   ├── models/             # 数据模型 (SQLAlchemy)
 │   │   │   ├── account.py      # Account 模型
 │   │   │   ├── note.py         # Note 模型
-│   │   │   └── cookie.py       # Cookie 模型
-│   │   └── services/           # 业务服务层
-│   │       └── sync_service.py # 笔记同步服务
+│   │   │   └── cookie.py       # Cookie 模型 (加密存储)
+│   │   ├── services/           # 业务服务层
+│   │   │   └── sync_service.py # 笔记同步服务
+│   │   └── utils/              # 工具模块
+│   │       └── crypto.py       # 加密工具 (Cookie 加密)
 │   ├── apis/                   # 小红书 API 封装
 │   ├── xhs_utils/              # 工具函数
 │   ├── static/                 # 静态资源 (JS 签名等)
 │   ├── datas/                  # 数据存储目录
 │   ├── run.py                  # 后端入口文件
+│   ├── migrate_db.py           # 数据库迁移工具
 │   ├── requirements.txt        # Python 依赖
 │   └── xhs_data.db             # SQLite 数据库
 │
@@ -51,6 +57,14 @@ xiaohongshu/
 │   ├── main.jsx                # 入口文件
 │   └── index.css               # 全局样式
 │
+├── nginx/                      # Nginx 配置
+│   ├── nginx.conf              # 基础 Nginx 配置
+│   └── nginx.ssl.conf          # SSL Nginx 配置
+│
+├── docker-compose.yml          # Docker Compose 配置
+├── docker-compose.ssl.yml      # SSL Docker Compose 配置
+├── Dockerfile                  # Docker 构建文件
+├── auto-deploy.sh              # 自动化部署脚本
 ├── index.html                  # HTML 入口
 ├── package.json                # Node.js 依赖
 ├── vite.config.js              # Vite 配置
@@ -72,6 +86,13 @@ xiaohongshu/
 - **Flask-CORS** - 跨域支持
 - **SQLite** - 数据库
 - **PyExecJS** - JS 执行引擎
+- **Cryptography** - 数据加密 (Fernet)
+
+### 部署
+- **Docker** - 容器化部署
+- **Docker Compose** - 服务编排
+- **Nginx** - 反向代理
+- **Let's Encrypt** - SSL 证书
 
 ## 🚀 快速开始
 
@@ -80,15 +101,47 @@ xiaohongshu/
 - **Node.js** >= 16.0
 - **Python** >= 3.8
 - **npm** 或 **yarn**
+- **Docker** (可选，用于容器化部署)
 
-### 方式一：一键启动 (Windows)
+### 方式一：Docker 部署 (推荐)
+
+```bash
+# 1. 进入项目目录
+cd /home/xhs/xiaohongshu
+
+# 2. 给脚本添加执行权限
+chmod +x auto-deploy.sh
+
+# 3. 配置环境变量
+cp env.production.example .env.production
+nano .env.production  # 编辑配置
+
+# 4. 执行部署
+./auto-deploy.sh deploy
+```
+
+详细部署文档请参考 [AUTO_DEPLOY.md](./AUTO_DEPLOY.md)
+
+**常用命令：**
+
+| 命令 | 说明 |
+|------|------|
+| `./auto-deploy.sh deploy` | 完整部署 |
+| `./auto-deploy.sh update` | 拉取代码并更新 |
+| `./auto-deploy.sh stop` | 停止所有服务 |
+| `./auto-deploy.sh restart` | 重启服务 |
+| `./auto-deploy.sh status` | 查看状态 |
+| `./auto-deploy.sh logs` | 查看日志 |
+| `./auto-deploy.sh ssl-init` | 初始化 SSL 证书 |
+
+### 方式二：一键启动 (Windows)
 
 ```bash
 # 双击运行启动脚本
 start_app.bat
 ```
 
-### 方式二：手动启动
+### 方式三：手动启动
 
 #### 1. 安装后端依赖
 
@@ -176,7 +229,22 @@ COOKIES=你的小红书cookie字符串
 
 # Flask 密钥 (生产环境请修改)
 SECRET_KEY=your-secret-key
+
+# Cookie 加密密钥 (可选，建议在生产环境设置)
+# 生成方式: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+COOKIE_ENCRYPTION_KEY=your-fernet-key
 ```
+
+### Cookie 安全说明
+
+系统支持 Cookie 加密存储和传输：
+
+- **加密存储**：Cookie 使用 Fernet 对称加密存储在数据库中
+- **传输加密**：前后端传输 Cookie 时进行加密，防止中间人攻击
+- **运行时长统计**：系统会记录每个 Cookie 的运行时长
+- **历史记录**：支持查看 Cookie 历史和上次有效运行时长
+
+> 如果未设置 `COOKIE_ENCRYPTION_KEY`，系统会使用简单混淆方式存储（仅适用于开发环境）
 
 ### Cookie 获取方式
 

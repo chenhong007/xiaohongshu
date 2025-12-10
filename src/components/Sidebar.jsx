@@ -73,6 +73,7 @@ export const Sidebar = ({
         <h1 className="text-xl font-bold text-red-500 flex items-center gap-2">
           <span className="text-2xl">📕</span> 小红书采集系统
         </h1>
+        <div className="text-xs text-gray-400 mt-1">版本: 20251210</div>
       </div>
 
       <div className="p-4 flex-1 overflow-hidden flex flex-col">
