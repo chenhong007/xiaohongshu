@@ -2,9 +2,27 @@
 import json
 import re
 import urllib
+import time
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from xhs_utils.xhs_util import splice_str, generate_request_params, generate_x_b3_traceid, get_common_headers
 from loguru import logger
+
+
+def create_session_with_retry(retries=3, backoff_factor=0.5):
+    """创建带重试机制的 requests session"""
+    session = requests.Session()
+    retry = Retry(
+        total=retries,
+        backoff_factor=backoff_factor,
+        status_forcelist=[500, 502, 503, 504],
+        allowed_methods=["HEAD", "GET", "POST", "OPTIONS"]
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount('https://', adapter)
+    session.mount('http://', adapter)
+    return session
 
 """
     获小红书的api
@@ -240,9 +258,19 @@ class XHS_Apis():
             }
             splice_api = splice_str(api, params)
             headers, cookies, data = generate_request_params(cookies_str, splice_api, '', 'GET')
-            response = requests.get(self.base_url + splice_api, headers=headers, cookies=cookies, proxies=proxies)
+            # 使用带重试的 session，增加超时设置
+            session = create_session_with_retry()
+            response = session.get(self.base_url + splice_api, headers=headers, cookies=cookies, proxies=proxies, timeout=30)
             res_json = response.json()
             success, msg = res_json["success"], res_json["msg"]
+        except requests.exceptions.ConnectionError as e:
+            success = False
+            msg = f"连接错误，可能是网络问题或被服务器限制: {str(e)}"
+            logger.warning(msg)
+        except requests.exceptions.Timeout as e:
+            success = False
+            msg = f"请求超时: {str(e)}"
+            logger.warning(msg)
         except Exception as e:
             success = False
             msg = str(e)
@@ -260,6 +288,7 @@ class XHS_Apis():
         note_list = []
         success = True
         msg = 'success'
+        page_count = 0
         try:
             urlParse = urllib.parse.urlparse(user_url)
             user_id = urlParse.path.split("/")[-1]
@@ -273,6 +302,11 @@ class XHS_Apis():
             xsec_token = kvDist.get('xsec_token', "")
             xsec_source = kvDist.get('xsec_source', "pc_search")
             while True:
+                # 非首页请求增加间隔，防止请求过快被限制
+                if page_count > 0:
+                    time.sleep(1)
+                page_count += 1
+                
                 success, msg, res_json = self.get_user_note_info(user_id, cursor, cookies_str, xsec_token, xsec_source, proxies)
                 if not success:
                     raise Exception(msg)

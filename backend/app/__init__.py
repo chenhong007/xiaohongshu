@@ -136,6 +136,9 @@ def create_app(config_class=None):
     # 注册请求钩子
     register_request_hooks(app)
     
+    # 注册健康检查端点
+    register_health_check(app)
+    
     logger.info(f"应用初始化完成，数据库: {db_uri}")
     
     return app
@@ -187,3 +190,17 @@ def register_request_hooks(app):
                 logger = get_logger('slow_request')
                 logger.warning(f"Slow request: {request.method} {request.path} took {duration:.2f}ms")
         return response
+
+
+def register_health_check(app):
+    """注册健康检查端点"""
+    from flask import jsonify
+    
+    @app.route('/api/health')
+    @app.route('/api/v1/health')
+    def health_check():
+        """健康检查端点，用于 Docker 容器健康检查"""
+        return jsonify({
+            'status': 'healthy',
+            'service': 'xhs-backend'
+        })

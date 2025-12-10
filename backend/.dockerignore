@@ -1,0 +1,40 @@
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv
+.venv
+env
+.env
+.env.*
+!env.example
+
+# Data files (mounted as volumes)
+xhs_data.db
+datas/media_datas/*
+datas/excel_datas/*
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Logs
+*.log
+logs
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test
+.pytest_cache
+.coverage
+htmlcov
+
+# Documentation
+*.md
+

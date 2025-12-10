@@ -1,0 +1,60 @@
+# Node
+node_modules
+npm-debug.log
+.npm
+
+# Build outputs
+dist
+build
+
+# Git
+.git
+.gitignore
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Environment
+.env
+.env.*
+!.env.example
+!env.production.example
+
+# Logs
+*.log
+logs
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv
+.venv
+env
+
+# Test
+coverage
+.nyc_output
+
+# Documentation
+*.md
+!README.md
+
+# User data (will be mounted as volumes)
+backend/xhs_data.db
+backend/datas/media_datas/*
+backend/datas/excel_datas/*
+
+# Misc
+*.bat
+user_query
+

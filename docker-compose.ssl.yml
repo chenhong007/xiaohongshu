@@ -1,0 +1,72 @@
+# Docker Compose 配置 - 带 SSL 支持
+# 域名: xhs.aitop.ink
+# 使用 Let's Encrypt 自动获取 SSL 证书
+
+version: '3.8'
+
+services:
+  # 前端服务 (Nginx + SSL)
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.ssl
+    container_name: xhs-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - backend
+    volumes:
+      - ./certbot/conf:/etc/letsencrypt
+      - ./certbot/www:/var/www/certbot
+    networks:
+      - xhs-network
+    command: "/bin/sh -c 'while :; do sleep 6h & wait $${!}; nginx -s reload; done & nginx -g \"daemon off;\"'"
+
+  # Certbot - SSL 证书自动续期
+  certbot:
+    image: certbot/certbot
+    container_name: xhs-certbot
+    restart: unless-stopped
+    volumes:
+      - ./certbot/conf:/etc/letsencrypt
+      - ./certbot/www:/var/www/certbot
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
+
+  # 后端服务 (Flask + Gunicorn)
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: xhs-backend
+    restart: unless-stopped
+    environment:
+      - FLASK_ENV=production
+      - SECRET_KEY=${SECRET_KEY}
+      - COOKIE_ENCRYPTION_KEY=${COOKIE_ENCRYPTION_KEY}
+      - ADMIN_API_KEY=${ADMIN_API_KEY}
+      - DATABASE_URL=sqlite:///xhs_data.db
+      - CORS_ORIGINS=https://xhs.aitop.ink,http://xhs.aitop.ink
+      - LOG_LEVEL=WARNING
+    volumes:
+      - xhs-data:/app
+      - xhs-media:/app/datas/media_datas
+      - xhs-excel:/app/datas/excel_datas
+    networks:
+      - xhs-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  xhs-network:
+    driver: bridge
+
+volumes:
+  xhs-data:
+  xhs-media:
+  xhs-excel:
+

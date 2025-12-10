@@ -1,0 +1,58 @@
+# Docker Compose 配置 - 小红书采集系统
+# 域名: xhs.aitop.ink
+
+version: '3.8'
+
+services:
+  # 前端服务 (Nginx)
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: xhs-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    networks:
+      - xhs-network
+
+  # 后端服务 (Flask + Gunicorn)
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: xhs-backend
+    restart: unless-stopped
+    environment:
+      - FLASK_ENV=production
+      - SECRET_KEY=${SECRET_KEY}
+      - COOKIE_ENCRYPTION_KEY=${COOKIE_ENCRYPTION_KEY}
+      - ADMIN_API_KEY=${ADMIN_API_KEY}
+      - DATABASE_URL=sqlite:///xhs_data.db
+      - CORS_ORIGINS=http://xhs.aitop.ink,https://xhs.aitop.ink,http://localhost
+      - LOG_LEVEL=WARNING
+    volumes:
+      # 持久化数据库
+      - xhs-data:/app
+      # 持久化媒体文件
+      - xhs-media:/app/datas/media_datas
+      - xhs-excel:/app/datas/excel_datas
+    networks:
+      - xhs-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  xhs-network:
+    driver: bridge
+
+volumes:
+  xhs-data:
+  xhs-media:
+  xhs-excel:
+
