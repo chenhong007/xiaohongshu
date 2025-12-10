@@ -3,3 +3,24 @@ XHS-Downloader
 Spider_XHS
 backend/xhs_data.db
 *.pyc
+
+# SSL 证书和私钥 - 绝对不要提交！
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# Let's Encrypt / Certbot
+nginx-proxy/certbot/conf/
+nginx-proxy/certs/
+
+# 环境变量文件
+.env
+.env.*
+!.env.example
+!env.*.example
+
+# 私钥文件
+**/private_key.json
+**/privkey*
