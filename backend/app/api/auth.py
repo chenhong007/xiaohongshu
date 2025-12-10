@@ -248,6 +248,12 @@ def get_current_user():
         
         # Cookie 有效，返回用户信息
         if cookie.is_valid:
+            # 如果 Cookie 有效但没有启动计时器，自动启动（兼容旧数据）
+            if not cookie.run_start_time:
+                cookie.start_run_timer()
+                db.session.commit()
+                logger.info(f"为现有有效 Cookie {cookie.id} 自动启动计时器")
+            
             # 检查是否使用了安全加密
             crypto = get_crypto()
             run_info = cookie.get_run_info()
