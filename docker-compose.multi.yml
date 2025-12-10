@@ -34,7 +34,7 @@ services:
       - COOKIE_ENCRYPTION_KEY=${COOKIE_ENCRYPTION_KEY}
       - ADMIN_API_KEY=${ADMIN_API_KEY}
       - DATABASE_URL=sqlite:///xhs_data.db
-      - CORS_ORIGINS=http://xhs.aitop.ink,https://xhs.aitop.ink
+      - CORS_ORIGINS=http://xhs.topai.ink,https://xhs.topai.ink
       - LOG_LEVEL=WARNING
     volumes:
       - xhs-data:/app
