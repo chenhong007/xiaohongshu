@@ -288,6 +288,12 @@ class SyncService:
                             elif (existing_note.type == '图集' or existing_note.type == 'normal') and \
                                  (not existing_note.image_list or existing_note.image_list == '[]'):
                                 need_fetch_detail = True
+                            # 【关键修复】检查是否缺少详情页数据
+                            # upload_time是详情页才返回的字段,如果为空说明从未获取过详情
+                            # 这时收藏、评论、转发数据也是不准确的(默认为0)
+                            elif not existing_note.upload_time or existing_note.upload_time == '':
+                                need_fetch_detail = True
+                                logger.info(f"Note {note_id} missing upload_time, will fetch detail")
                     else:
                         # 方案A:极速同步
                         # 永远只使用列表页数据,不获取详情

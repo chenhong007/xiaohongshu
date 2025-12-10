@@ -263,10 +263,37 @@ check_git_clean() {
     return 0  # 干净的工作区
 }
 
-# 获取镜像中的 Git commit label
-get_image_commit() {
-    local image_name=$1
-    docker inspect --format='{{index .Config.Labels "git.commit"}}' "$image_name" 2>/dev/null || echo ""
+# 获取已部署的版本信息
+get_deployed_version() {
+    local version_file="${PROJECT_DIR}/.deploy_version"
+    if [ -f "$version_file" ]; then
+        source "$version_file"
+        echo "$GIT_COMMIT"
+    else
+        echo ""
+    fi
+}
+
+# 获取已部署的版本短 hash
+get_deployed_version_short() {
+    local version_file="${PROJECT_DIR}/.deploy_version"
+    if [ -f "$version_file" ]; then
+        source "$version_file"
+        echo "$GIT_COMMIT_SHORT"
+    else
+        echo ""
+    fi
+}
+
+# 获取构建时间
+get_deployed_build_time() {
+    local version_file="${PROJECT_DIR}/.deploy_version"
+    if [ -f "$version_file" ]; then
+        source "$version_file"
+        echo "$BUILD_TIME"
+    else
+        echo ""
+    fi
 }
 
 # 验证镜像代码版本
@@ -284,36 +311,23 @@ verify_image_version() {
     
     log_info "当前 Git commit: ${current_commit_short} (${current_commit})"
     
-    # 检查后端镜像
-    local backend_commit=$(get_image_commit "xiaohongshu-backend:latest")
-    if [ -n "$backend_commit" ]; then
-        if [ "$backend_commit" == "$current_commit" ]; then
-            log_info "✅ 后端镜像版本匹配: ${current_commit_short}"
-        else
-            local backend_short=$(echo "$backend_commit" | cut -c1-7)
-            log_warn "⚠️  后端镜像版本不匹配!"
-            log_warn "   镜像版本: ${backend_short}"
-            log_warn "   Git 版本: ${current_commit_short}"
-            return 1
-        fi
-    else
-        log_warn "后端镜像无版本标签（旧镜像或首次构建）"
-    fi
+    # 检查已部署版本
+    local deployed_commit=$(get_deployed_version)
+    local deployed_commit_short=$(get_deployed_version_short)
+    local deployed_time=$(get_deployed_build_time)
     
-    # 检查前端镜像
-    local frontend_commit=$(get_image_commit "xiaohongshu-frontend:latest")
-    if [ -n "$frontend_commit" ]; then
-        if [ "$frontend_commit" == "$current_commit" ]; then
-            log_info "✅ 前端镜像版本匹配: ${current_commit_short}"
+    if [ -n "$deployed_commit" ]; then
+        if [ "$deployed_commit" == "$current_commit" ]; then
+            log_info "✅ 镜像版本匹配: ${deployed_commit_short}"
+            [ -n "$deployed_time" ] && log_info "   构建时间: ${deployed_time}"
         else
-            local frontend_short=$(echo "$frontend_commit" | cut -c1-7)
-            log_warn "⚠️  前端镜像版本不匹配!"
-            log_warn "   镜像版本: ${frontend_short}"
+            log_warn "⚠️  镜像版本不匹配!"
+            log_warn "   镜像版本: ${deployed_commit_short}"
             log_warn "   Git 版本: ${current_commit_short}"
             return 1
         fi
     else
-        log_warn "前端镜像无版本标签（旧镜像或首次构建）"
+        log_warn "未找到版本记录（首次构建或旧版本）"
     fi
     
     return 0
@@ -378,17 +392,20 @@ build_images() {
     log_info "Git commit: ${git_commit_short} (${git_commit})"
     log_info "构建时间: ${build_time}"
     
-    # 构建参数：添加 Git commit 作为镜像 label
-    local build_args="--build-arg GIT_COMMIT=${git_commit} --build-arg BUILD_TIME=${build_time}"
-    local labels="--label git.commit=${git_commit} --label git.commit.short=${git_commit_short} --label build.time=${build_time}"
-    
     # 使用 --no-cache 确保获取最新代码
     if [ "$1" == "--no-cache" ]; then
         log_info "无缓存构建..."
-        DOCKER_BUILDKIT=1 docker compose -f "$compose_file" build --no-cache $labels
+        DOCKER_BUILDKIT=1 docker compose -f "$compose_file" build --no-cache
     else
-        DOCKER_BUILDKIT=1 docker compose -f "$compose_file" build $labels
+        DOCKER_BUILDKIT=1 docker compose -f "$compose_file" build
     fi
+    
+    # 保存构建版本信息到本地文件
+    cat > "${PROJECT_DIR}/.deploy_version" << EOF
+GIT_COMMIT=${git_commit}
+GIT_COMMIT_SHORT=${git_commit_short}
+BUILD_TIME=${build_time}
+EOF
     
     log_info "镜像构建完成 (commit: ${git_commit_short})"
 }
@@ -686,55 +703,34 @@ cmd_verify() {
     fi
     
     echo ""
-    echo -e "${CYAN}=== Docker 镜像版本 ===${NC}"
+    echo -e "${CYAN}=== 已部署镜像版本 ===${NC}"
     
-    # 检查后端镜像
-    local backend_commit=$(get_image_commit "xiaohongshu-backend:latest")
-    local backend_time=$(docker inspect --format='{{index .Config.Labels "build.time"}}' "xiaohongshu-backend:latest" 2>/dev/null || echo "")
-    
-    echo ""
-    echo "后端镜像 (xiaohongshu-backend:latest):"
-    if [ -n "$backend_commit" ]; then
-        local backend_short=$(echo "$backend_commit" | cut -c1-7)
-        echo "  Git commit: ${backend_short} (${backend_commit})"
-        [ -n "$backend_time" ] && echo "  构建时间: ${backend_time}"
-        
-        if [ "$backend_commit" == "$current_commit" ]; then
-            echo -e "  状态: ${GREEN}✅ 版本匹配${NC}"
-        else
-            echo -e "  状态: ${RED}❌ 版本不匹配${NC}"
-        fi
-    else
-        echo -e "  状态: ${YELLOW}⚠️  无版本标签（旧镜像）${NC}"
-    fi
-    
-    # 检查前端镜像
-    local frontend_commit=$(get_image_commit "xiaohongshu-frontend:latest")
-    local frontend_time=$(docker inspect --format='{{index .Config.Labels "build.time"}}' "xiaohongshu-frontend:latest" 2>/dev/null || echo "")
+    # 读取部署版本信息
+    local deployed_commit=$(get_deployed_version)
+    local deployed_commit_short=$(get_deployed_version_short)
+    local deployed_time=$(get_deployed_build_time)
     
     echo ""
-    echo "前端镜像 (xiaohongshu-frontend:latest):"
-    if [ -n "$frontend_commit" ]; then
-        local frontend_short=$(echo "$frontend_commit" | cut -c1-7)
-        echo "  Git commit: ${frontend_short} (${frontend_commit})"
-        [ -n "$frontend_time" ] && echo "  构建时间: ${frontend_time}"
+    if [ -n "$deployed_commit" ]; then
+        echo "已部署版本: ${deployed_commit_short} (${deployed_commit})"
+        [ -n "$deployed_time" ] && echo "构建时间: ${deployed_time}"
         
-        if [ "$frontend_commit" == "$current_commit" ]; then
-            echo -e "  状态: ${GREEN}✅ 版本匹配${NC}"
+        if [ "$deployed_commit" == "$current_commit" ]; then
+            echo -e "状态: ${GREEN}✅ 版本匹配${NC}"
         else
-            echo -e "  状态: ${RED}❌ 版本不匹配${NC}"
+            echo -e "状态: ${RED}❌ 版本不匹配${NC}"
         fi
     else
-        echo -e "  状态: ${YELLOW}⚠️  无版本标签（旧镜像）${NC}"
+        echo -e "状态: ${YELLOW}⚠️  未找到版本记录（首次部署或旧版本）${NC}"
     fi
     
     echo ""
     
     # 总结
-    if [ -n "$backend_commit" ] && [ -n "$frontend_commit" ]; then
-        if [ "$backend_commit" == "$current_commit" ] && [ "$frontend_commit" == "$current_commit" ]; then
+    if [ -n "$deployed_commit" ]; then
+        if [ "$deployed_commit" == "$current_commit" ]; then
             echo -e "${GREEN}========================================${NC}"
-            echo -e "${GREEN}✅ 所有镜像都是最新 Git 提交的代码${NC}"
+            echo -e "${GREEN}✅ 已部署镜像是最新 Git 提交的代码${NC}"
             echo -e "${GREEN}========================================${NC}"
         else
             echo -e "${YELLOW}========================================${NC}"
@@ -742,6 +738,11 @@ cmd_verify() {
             echo -e "${YELLOW}建议运行: ./auto-deploy.sh update --no-cache${NC}"
             echo -e "${YELLOW}========================================${NC}"
         fi
+    else
+        echo -e "${YELLOW}========================================${NC}"
+        echo -e "${YELLOW}⚠️  无法确定已部署的版本${NC}"
+        echo -e "${YELLOW}建议运行: ./auto-deploy.sh update --no-cache${NC}"
+        echo -e "${YELLOW}========================================${NC}"
     fi
 }
 

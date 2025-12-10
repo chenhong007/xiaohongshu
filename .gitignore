@@ -3,7 +3,9 @@ XHS-Downloader
 Spider_XHS
 backend/xhs_data.db
 *.pyc
-
+*.log
+# 部署版本记录（本地状态）
+.deploy_version
 # SSL 证书和私钥 - 绝对不要提交！
 *.pem
 *.key
