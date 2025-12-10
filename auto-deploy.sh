@@ -24,6 +24,7 @@
 #
 # 其他命令:
 #   backup     - 备份数据
+#   verify     - 验证镜像代码版本
 #   clean      - 清理无用的 Docker 资源
 #   rollback   - 回滚到上一个版本
 #
@@ -234,6 +235,90 @@ load_env() {
     fi
 }
 
+# 获取当前 Git commit hash
+get_git_commit() {
+    if [ -d ".git" ]; then
+        git rev-parse HEAD 2>/dev/null || echo "unknown"
+    else
+        echo "unknown"
+    fi
+}
+
+# 获取当前 Git commit 短 hash
+get_git_commit_short() {
+    if [ -d ".git" ]; then
+        git rev-parse --short HEAD 2>/dev/null || echo "unknown"
+    else
+        echo "unknown"
+    fi
+}
+
+# 检查是否有未提交的更改
+check_git_clean() {
+    if [ -d ".git" ]; then
+        if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+            return 1  # 有未提交的更改
+        fi
+    fi
+    return 0  # 干净的工作区
+}
+
+# 获取镜像中的 Git commit label
+get_image_commit() {
+    local image_name=$1
+    docker inspect --format='{{index .Config.Labels "git.commit"}}' "$image_name" 2>/dev/null || echo ""
+}
+
+# 验证镜像代码版本
+verify_image_version() {
+    log_step "🔍 验证镜像代码版本..."
+    
+    cd "$PROJECT_DIR"
+    local current_commit=$(get_git_commit)
+    local current_commit_short=$(get_git_commit_short)
+    
+    if [ "$current_commit" == "unknown" ]; then
+        log_warn "无法获取 Git commit，跳过版本验证"
+        return 0
+    fi
+    
+    log_info "当前 Git commit: ${current_commit_short} (${current_commit})"
+    
+    # 检查后端镜像
+    local backend_commit=$(get_image_commit "xiaohongshu-backend:latest")
+    if [ -n "$backend_commit" ]; then
+        if [ "$backend_commit" == "$current_commit" ]; then
+            log_info "✅ 后端镜像版本匹配: ${current_commit_short}"
+        else
+            local backend_short=$(echo "$backend_commit" | cut -c1-7)
+            log_warn "⚠️  后端镜像版本不匹配!"
+            log_warn "   镜像版本: ${backend_short}"
+            log_warn "   Git 版本: ${current_commit_short}"
+            return 1
+        fi
+    else
+        log_warn "后端镜像无版本标签（旧镜像或首次构建）"
+    fi
+    
+    # 检查前端镜像
+    local frontend_commit=$(get_image_commit "xiaohongshu-frontend:latest")
+    if [ -n "$frontend_commit" ]; then
+        if [ "$frontend_commit" == "$current_commit" ]; then
+            log_info "✅ 前端镜像版本匹配: ${current_commit_short}"
+        else
+            local frontend_short=$(echo "$frontend_commit" | cut -c1-7)
+            log_warn "⚠️  前端镜像版本不匹配!"
+            log_warn "   镜像版本: ${frontend_short}"
+            log_warn "   Git 版本: ${current_commit_short}"
+            return 1
+        fi
+    else
+        log_warn "前端镜像无版本标签（旧镜像或首次构建）"
+    fi
+    
+    return 0
+}
+
 # ============================================================
 # 核心功能函数
 # ============================================================
@@ -273,16 +358,39 @@ build_images() {
     
     cd "$PROJECT_DIR"
     local compose_file=$(get_compose_file)
+    local git_commit=$(get_git_commit)
+    local git_commit_short=$(get_git_commit_short)
+    local build_time=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+    
+    # 检查未提交的更改
+    if ! check_git_clean; then
+        log_warn "⚠️  检测到未提交的本地更改！"
+        log_warn "   构建的镜像可能包含未提交的代码"
+        echo ""
+        read -p "是否继续构建？(y/N) " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            log_error "已取消构建，请先提交代码"
+            exit 1
+        fi
+    fi
+    
+    log_info "Git commit: ${git_commit_short} (${git_commit})"
+    log_info "构建时间: ${build_time}"
+    
+    # 构建参数：添加 Git commit 作为镜像 label
+    local build_args="--build-arg GIT_COMMIT=${git_commit} --build-arg BUILD_TIME=${build_time}"
+    local labels="--label git.commit=${git_commit} --label git.commit.short=${git_commit_short} --label build.time=${build_time}"
     
     # 使用 --no-cache 确保获取最新代码
     if [ "$1" == "--no-cache" ]; then
         log_info "无缓存构建..."
-        docker compose -f "$compose_file" build --no-cache
+        DOCKER_BUILDKIT=1 docker compose -f "$compose_file" build --no-cache $labels
     else
-        docker compose -f "$compose_file" build
+        DOCKER_BUILDKIT=1 docker compose -f "$compose_file" build $labels
     fi
     
-    log_info "镜像构建完成"
+    log_info "镜像构建完成 (commit: ${git_commit_short})"
 }
 
 # 启动服务
@@ -325,6 +433,11 @@ check_health() {
         fi
         sleep 2
     done
+    
+    # 验证镜像版本
+    verify_image_version || {
+        log_warn "镜像版本验证失败，建议使用 --no-cache 重新构建"
+    }
     
     # 显示服务状态
     show_status
@@ -381,7 +494,13 @@ cmd_deploy() {
 
 # 快速更新（拉取代码后重新部署）
 cmd_update() {
-    log_step "🔄 开始快速更新"
+    local no_cache=""
+    if [ "$1" == "--no-cache" ]; then
+        no_cache="--no-cache"
+        log_step "🔄 开始强制更新（无缓存重建）"
+    else
+        log_step "🔄 开始快速更新"
+    fi
     
     check_docker
     check_env
@@ -402,7 +521,7 @@ cmd_update() {
     # 重新部署
     stop_services
     check_all_ports
-    build_images
+    build_images $no_cache
     start_services
     
     log_info "✅ 更新完成"
@@ -535,6 +654,95 @@ cmd_clean() {
 cmd_shell() {
     log_info "进入后端容器..."
     docker exec -it xhs-backend /bin/sh
+}
+
+# 验证镜像版本命令
+cmd_verify() {
+    log_step "🔍 验证代码版本"
+    
+    cd "$PROJECT_DIR"
+    
+    local current_commit=$(get_git_commit)
+    local current_commit_short=$(get_git_commit_short)
+    
+    echo ""
+    echo -e "${CYAN}=== Git 仓库状态 ===${NC}"
+    
+    if [ "$current_commit" == "unknown" ]; then
+        log_warn "当前目录不是 Git 仓库"
+    else
+        echo "当前分支: $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'unknown')"
+        echo "最新提交: ${current_commit_short} (${current_commit})"
+        echo "提交时间: $(git log -1 --format='%ci' 2>/dev/null || echo 'unknown')"
+        echo "提交信息: $(git log -1 --format='%s' 2>/dev/null || echo 'unknown')"
+        
+        if ! check_git_clean; then
+            echo ""
+            echo -e "${YELLOW}⚠️  存在未提交的本地更改:${NC}"
+            git status --short 2>/dev/null
+        else
+            echo -e "${GREEN}✅ 工作区干净${NC}"
+        fi
+    fi
+    
+    echo ""
+    echo -e "${CYAN}=== Docker 镜像版本 ===${NC}"
+    
+    # 检查后端镜像
+    local backend_commit=$(get_image_commit "xiaohongshu-backend:latest")
+    local backend_time=$(docker inspect --format='{{index .Config.Labels "build.time"}}' "xiaohongshu-backend:latest" 2>/dev/null || echo "")
+    
+    echo ""
+    echo "后端镜像 (xiaohongshu-backend:latest):"
+    if [ -n "$backend_commit" ]; then
+        local backend_short=$(echo "$backend_commit" | cut -c1-7)
+        echo "  Git commit: ${backend_short} (${backend_commit})"
+        [ -n "$backend_time" ] && echo "  构建时间: ${backend_time}"
+        
+        if [ "$backend_commit" == "$current_commit" ]; then
+            echo -e "  状态: ${GREEN}✅ 版本匹配${NC}"
+        else
+            echo -e "  状态: ${RED}❌ 版本不匹配${NC}"
+        fi
+    else
+        echo -e "  状态: ${YELLOW}⚠️  无版本标签（旧镜像）${NC}"
+    fi
+    
+    # 检查前端镜像
+    local frontend_commit=$(get_image_commit "xiaohongshu-frontend:latest")
+    local frontend_time=$(docker inspect --format='{{index .Config.Labels "build.time"}}' "xiaohongshu-frontend:latest" 2>/dev/null || echo "")
+    
+    echo ""
+    echo "前端镜像 (xiaohongshu-frontend:latest):"
+    if [ -n "$frontend_commit" ]; then
+        local frontend_short=$(echo "$frontend_commit" | cut -c1-7)
+        echo "  Git commit: ${frontend_short} (${frontend_commit})"
+        [ -n "$frontend_time" ] && echo "  构建时间: ${frontend_time}"
+        
+        if [ "$frontend_commit" == "$current_commit" ]; then
+            echo -e "  状态: ${GREEN}✅ 版本匹配${NC}"
+        else
+            echo -e "  状态: ${RED}❌ 版本不匹配${NC}"
+        fi
+    else
+        echo -e "  状态: ${YELLOW}⚠️  无版本标签（旧镜像）${NC}"
+    fi
+    
+    echo ""
+    
+    # 总结
+    if [ -n "$backend_commit" ] && [ -n "$frontend_commit" ]; then
+        if [ "$backend_commit" == "$current_commit" ] && [ "$frontend_commit" == "$current_commit" ]; then
+            echo -e "${GREEN}========================================${NC}"
+            echo -e "${GREEN}✅ 所有镜像都是最新 Git 提交的代码${NC}"
+            echo -e "${GREEN}========================================${NC}"
+        else
+            echo -e "${YELLOW}========================================${NC}"
+            echo -e "${YELLOW}⚠️  镜像版本与 Git 不一致${NC}"
+            echo -e "${YELLOW}建议运行: ./auto-deploy.sh update --no-cache${NC}"
+            echo -e "${YELLOW}========================================${NC}"
+        fi
+    fi
 }
 
 # ============================================================
@@ -742,6 +950,7 @@ show_help() {
     echo -e "  ${GREEN}deploy${NC}       完整部署（停止旧服务 + 重新构建 + 启动）"
     echo "               选项: --no-cache  无缓存构建"
     echo -e "  ${GREEN}update${NC}       快速更新（拉取代码 + 备份 + 重新部署）"
+    echo "               选项: --no-cache  强制无缓存重建镜像"
     echo -e "  ${GREEN}restart${NC}      重启所有服务"
     echo -e "  ${GREEN}stop${NC}         停止所有服务"
     echo -e "  ${GREEN}status${NC}       查看服务状态"
@@ -759,6 +968,7 @@ show_help() {
     echo -e "  ${GREEN}backup${NC}       备份数据"
     echo "               选项: --full  完整备份（含媒体文件）"
     echo -e "  ${GREEN}rollback${NC}     回滚到上一个版本"
+    echo -e "  ${GREEN}verify${NC}       验证镜像代码版本是否与 Git 一致"
     echo -e "  ${GREEN}clean${NC}        清理无用的 Docker 资源"
     echo -e "  ${GREEN}shell${NC}        进入后端容器"
     echo -e "  ${GREEN}help${NC}         显示此帮助信息"
@@ -768,6 +978,8 @@ show_help() {
     echo "  $0 deploy --no-cache   # 无缓存完整部署"
     echo "  $0 ssl-init            # 首次初始化 SSL 证书"
     echo "  $0 update              # 拉取代码并更新"
+    echo "  $0 update --no-cache   # 拉取代码并强制重建镜像"
+    echo "  $0 verify              # 检查镜像是否为最新 Git 代码"
     echo "  $0 logs backend        # 查看后端日志"
     echo ""
     echo "当前配置:"
@@ -790,7 +1002,7 @@ main() {
             cmd_deploy "$2"
             ;;
         update)
-            cmd_update
+            cmd_update "$2"
             ;;
         restart)
             cmd_restart
@@ -815,6 +1027,9 @@ main() {
             ;;
         shell)
             cmd_shell
+            ;;
+        verify)
+            cmd_verify
             ;;
         ssl-init)
             cmd_ssl_init

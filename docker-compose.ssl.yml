@@ -46,11 +46,11 @@ services:
       - SECRET_KEY=${SECRET_KEY}
       - COOKIE_ENCRYPTION_KEY=${COOKIE_ENCRYPTION_KEY}
       - ADMIN_API_KEY=${ADMIN_API_KEY}
-      - DATABASE_URL=sqlite:///xhs_data.db
+      - DATABASE_URL=sqlite:////app/instance/xhs_data.db
       - CORS_ORIGINS=https://xhs.topai.ink,http://xhs.topai.ink
       - LOG_LEVEL=WARNING
     volumes:
-      - xhs-data:/app
+      - xhs-db:/app/instance
       - xhs-media:/app/datas/media_datas
       - xhs-excel:/app/datas/excel_datas
     networks:
@@ -66,7 +66,7 @@ networks:
     driver: bridge
 
 volumes:
-  xhs-data:
+  xhs-db:
   xhs-media:
   xhs-excel:
 
