@@ -68,6 +68,11 @@ def handle_note_info(data, from_list=False):
     
     if from_list:
         # 处理列表页返回的简单数据结构
+        # 【重要说明】列表页 API (/api/sns/web/v1/user_posted) 只返回有限数据：
+        # - interact_info 中只有 liked_count（点赞数），没有收藏、评论、转发数
+        # - 没有发布时间字段
+        # 要获取完整数据需要调用详情页 API
+        
         note_id = data.get('note_id') or data.get('id')
         note_type = data.get('type', 'normal')
         if note_type == 'normal':
@@ -78,7 +83,7 @@ def handle_note_info(data, from_list=False):
         user = data.get('user', {})
         user_id = user.get('user_id', '')
         home_url = f'https://www.xiaohongshu.com/user/profile/{user_id}' if user_id else ''
-        nickname = user.get('nickname', '')
+        nickname = user.get('nickname', '') or user.get('nick_name', '')
         avatar = user.get('avatar', '')
         
         title = data.get('display_title', '') or data.get('title', '')
@@ -89,10 +94,19 @@ def handle_note_info(data, from_list=False):
         desc = data.get('desc', '')
         
         interact_info = data.get('interact_info', {})
-        liked_count = interact_info.get('liked_count', 0)
-        collected_count = interact_info.get('collected_count', 0)
-        comment_count = interact_info.get('comment_count', 0)
-        share_count = interact_info.get('share_count', 0)
+        # 【修复】列表页 API 返回的 liked_count 可能是字符串，需要转换为整数
+        liked_count_raw = interact_info.get('liked_count', 0)
+        try:
+            liked_count = int(liked_count_raw) if liked_count_raw else 0
+        except (ValueError, TypeError):
+            liked_count = 0
+        
+        # 【重要】列表页 API 不返回收藏、评论、转发数据
+        # 使用 None 标记"数据不可用"，与 0 区分（0 表示确实是 0）
+        # 在保存时，sync_service 会根据这个标记决定是否更新字段
+        collected_count = None  # 列表页不提供此数据
+        comment_count = None    # 列表页不提供此数据
+        share_count = None      # 列表页不提供此数据
         
         # 列表页通常没有完整的图片列表和视频地址，这里设为空或仅处理封面
         # 如果需要完整数据，必须进入详情页
@@ -102,31 +116,27 @@ def handle_note_info(data, from_list=False):
         
         # 尝试获取封面图
         cover = data.get('cover', {})
-        if cover and cover.get('url'):
-            if note_type == '视频':
-                video_cover = cover.get('url')
-            else:
-                image_list.append(cover.get('url'))
+        if cover:
+            # 优先使用 url_default 或 info_list 中的图片
+            cover_url = cover.get('url_default') or cover.get('url')
+            if not cover_url and cover.get('info_list'):
+                for info in cover['info_list']:
+                    if info.get('url'):
+                        cover_url = info['url']
+                        break
+            if cover_url:
+                if note_type == '视频':
+                    video_cover = cover_url
+                else:
+                    image_list.append(cover_url)
         
         tags = [] # 列表页通常不包含完整标签
         
-        # 处理时间
-        # 列表页可能没有精确的时间戳，或者字段名不同
-        # 尝试从多个可能的字段获取时间
-        upload_time = ''
-        if data.get('time'):
-            upload_time = timestamp_to_str(data.get('time'))
-        elif data.get('timestamp'):
-            upload_time = timestamp_to_str(data.get('timestamp'))
-        elif data.get('create_time'):
-            upload_time = timestamp_to_str(data.get('create_time'))
-        
-        # 如果仍然没有时间，使用当前时间作为备用（避免空值导致过滤问题）
-        if not upload_time:
-            from datetime import datetime
-            upload_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # 【重要】列表页 API 不返回发布时间
+        # 使用 None 标记"数据不可用"
+        upload_time = None  # 列表页不提供此数据
              
-        ip_location = data.get('ip_location', '未知')
+        ip_location = data.get('ip_location', '')
         
         return {
             'note_id': note_id,

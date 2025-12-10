@@ -288,25 +288,23 @@ class SyncService:
 
                     if not need_fetch_detail:
                         # 极速更新 (只更新互动数据)
+                        # 【重要说明】列表页 API 只返回点赞数，不返回收藏、评论、转发数和发布时间
                         try:
                             # 从列表页数据中提取互动信息
                             cleaned_data = handle_note_info(simple_note, from_list=True)
                             
                             if sync_mode == 'deep':
-                                # 深度模式下，如果是旧笔记，只更新互动数据，保留原有媒体链接和正文
+                                # 深度模式下，如果是旧笔记，只更新点赞数（列表页唯一可用的互动数据）
                                 existing_note = Note.query.filter_by(note_id=note_id).first()
                                 if existing_note:
-                                    existing_note.liked_count = cleaned_data['liked_count']
-                                    existing_note.collected_count = cleaned_data['collected_count']
-                                    existing_note.comment_count = cleaned_data['comment_count']
-                                    existing_note.share_count = cleaned_data['share_count']
+                                    # 只更新点赞数，其他数据保留（因为列表页不提供）
+                                    if cleaned_data['liked_count'] is not None:
+                                        existing_note.liked_count = cleaned_data['liked_count']
                                     existing_note.last_updated = datetime.utcnow()
                                     db.session.commit()
                             else:
-                                # 极速模式下，直接保存/更新笔记（可能会覆盖旧数据的正文为截断版，但速度快）
-                                # 为了安全起见，我们还是检查一下是否存在，如果存在只更新互动数据更好？
-                                # 用户原本的要求是：数据都有：标题、点赞、收藏、评论数都能更新。
-                                # handle_note_info(..., from_list=True) 已经处理好了数据结构
+                                # 极速模式下，保存/更新笔记
+                                # _save_note 会智能处理 None 值（不覆盖已有数据）
                                 SyncService._save_note(cleaned_data)
                                 
                         except Exception as e:
@@ -387,7 +385,12 @@ class SyncService:
     
     @staticmethod
     def _save_note(note_data):
-        """保存笔记到数据库（使用 merge 避免重复插入）"""
+        """保存笔记到数据库（使用 merge 避免重复插入）
+        
+        【重要说明】
+        列表页 API 只返回部分数据（点赞数），不返回收藏、评论、转发数和发布时间。
+        当这些字段为 None 时，表示"数据不可用"，应保留数据库中的现有值。
+        """
         try:
             # 【关键检查】确保 note_id 不为空
             note_id = note_data.get('note_id')
@@ -399,41 +402,61 @@ class SyncService:
             note = Note.query.filter_by(note_id=note_id).first()
             
             if note:
-                # 更新现有笔记
+                # 更新现有笔记 - 只更新非 None 的字段
                 note.nickname = note_data['nickname']
                 note.avatar = note_data['avatar']
                 note.title = note_data['title']
-                note.desc = note_data['desc']
+                # desc 可能为空字符串，但不应覆盖现有描述（除非详情页明确返回）
+                if note_data['desc'] is not None and note_data['desc'] != '':
+                    note.desc = note_data['desc']
                 note.type = note_data['note_type']
-                note.liked_count = note_data['liked_count']
-                note.collected_count = note_data['collected_count']
-                note.comment_count = note_data['comment_count']
-                note.share_count = note_data['share_count']
-                note.upload_time = note_data['upload_time']
-                note.video_addr = note_data['video_addr']
-                note.image_list = json.dumps(note_data['image_list'])
-                note.tags = json.dumps(note_data['tags'])
-                note.ip_location = note_data['ip_location']
+                
+                # 【关键逻辑】互动数据：只有非 None 时才更新
+                # liked_count 列表页有返回，始终更新
+                if note_data['liked_count'] is not None:
+                    note.liked_count = note_data['liked_count']
+                # collected_count、comment_count、share_count 列表页不返回（为 None），保留原值
+                if note_data['collected_count'] is not None:
+                    note.collected_count = note_data['collected_count']
+                if note_data['comment_count'] is not None:
+                    note.comment_count = note_data['comment_count']
+                if note_data['share_count'] is not None:
+                    note.share_count = note_data['share_count']
+                
+                # 【关键逻辑】发布时间：列表页不返回（为 None），保留原值
+                if note_data['upload_time'] is not None:
+                    note.upload_time = note_data['upload_time']
+                
+                # 媒体数据：只有非空时才更新
+                if note_data['video_addr']:
+                    note.video_addr = note_data['video_addr']
+                if note_data['image_list']:
+                    note.image_list = json.dumps(note_data['image_list'])
+                if note_data['tags']:
+                    note.tags = json.dumps(note_data['tags'])
+                if note_data['ip_location']:
+                    note.ip_location = note_data['ip_location']
+                    
                 note.last_updated = datetime.utcnow()
             else:
-                # 创建新笔记
+                # 创建新笔记 - None 值转为默认值
                 note = Note(
                     note_id=note_id,
                     user_id=note_data['user_id'],
                     nickname=note_data['nickname'],
                     avatar=note_data['avatar'],
                     title=note_data['title'],
-                    desc=note_data['desc'],
+                    desc=note_data['desc'] or '',
                     type=note_data['note_type'],
-                    liked_count=note_data['liked_count'],
-                    collected_count=note_data['collected_count'],
-                    comment_count=note_data['comment_count'],
-                    share_count=note_data['share_count'],
-                    upload_time=note_data['upload_time'],
-                    video_addr=note_data['video_addr'],
-                    image_list=json.dumps(note_data['image_list']),
-                    tags=json.dumps(note_data['tags']),
-                    ip_location=note_data['ip_location'],
+                    liked_count=note_data['liked_count'] if note_data['liked_count'] is not None else 0,
+                    collected_count=note_data['collected_count'] if note_data['collected_count'] is not None else 0,
+                    comment_count=note_data['comment_count'] if note_data['comment_count'] is not None else 0,
+                    share_count=note_data['share_count'] if note_data['share_count'] is not None else 0,
+                    upload_time=note_data['upload_time'] or '',
+                    video_addr=note_data['video_addr'] or '',
+                    image_list=json.dumps(note_data['image_list']) if note_data['image_list'] else '[]',
+                    tags=json.dumps(note_data['tags']) if note_data['tags'] else '[]',
+                    ip_location=note_data['ip_location'] or '',
                 )
                 db.session.add(note)
             
