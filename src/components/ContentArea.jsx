@@ -1,17 +1,49 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { RefreshCw, CheckCircle, Circle, Trash2, Upload, Download, AlertCircle } from 'lucide-react';
-import { accountApi } from '../services';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { RefreshCw, CheckCircle, Circle, Trash2, Upload, Download, AlertCircle, Zap, Database, StopCircle } from 'lucide-react';
+import { accountApi, COOKIE_INVALID_EVENT } from '../services';
 
 export const ContentArea = ({ activeTab, searchTerm, onAddClick, refreshTrigger, onRefresh }) => {
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(false);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [error, setError] = useState(null);
+  
+  // 记录上一次的账号状态，用于检测变化
+  const prevAccountsRef = useRef([]);
 
   // 过滤账号
   const filteredAccounts = accounts.filter(acc => 
     acc.name?.toLowerCase().includes(searchTerm.toLowerCase())
   );
+
+  // 触发 Cookie 失效事件
+  const emitCookieInvalid = () => {
+    window.dispatchEvent(new CustomEvent(COOKIE_INVALID_EVENT));
+  };
+
+  // 检测认证错误并触发事件
+  useEffect(() => {
+    // 检查是否有新的失败状态且包含 Cookie 错误
+    const hasNewAuthError = accounts.some(acc => {
+      // 找到对应的旧状态
+      const prevAcc = prevAccountsRef.current.find(p => p.id === acc.id);
+      
+      // 只有当状态从非 failed 变为 failed，或者 error_message 发生变化时才检查
+      if (acc.status === 'failed' && (!prevAcc || prevAcc.status !== 'failed' || prevAcc.error_message !== acc.error_message)) {
+        const msg = (acc.error_message || '').toLowerCase();
+        return msg.includes('cookie') || msg.includes('登录') || msg.includes('失效') || msg.includes('过期');
+      }
+      return false;
+    });
+
+    if (hasNewAuthError) {
+      console.log('Detected auth error in account sync, emitting cookie-invalid event');
+      emitCookieInvalid();
+    }
+
+    // 更新引用
+    prevAccountsRef.current = accounts;
+  }, [accounts]);
 
   // 获取账号列表
   const fetchAccounts = useCallback(async (silent = false) => {
@@ -31,7 +63,7 @@ export const ContentArea = ({ activeTab, searchTerm, onAddClick, refreshTrigger,
 
   // 轮询更新处理中的账号状态
   useEffect(() => {
-    const isProcessing = accounts.some(acc => acc.status === 'processing');
+    const isProcessing = accounts.some(acc => acc.status === 'processing' || acc.status === 'pending');
     if (isProcessing) {
       const timer = setInterval(() => fetchAccounts(true), 2000);
       return () => clearInterval(timer);
@@ -96,47 +128,89 @@ export const ContentArea = ({ activeTab, searchTerm, onAddClick, refreshTrigger,
     }
   };
 
+  // 更新本地账号状态（乐观更新）
+  const updateLocalAccountsStatus = (ids, status, progress = 0) => {
+    const idSet = new Set(ids);
+    setAccounts(prev => prev.map(acc => {
+      if (idSet.has(acc.id)) {
+        return { ...acc, status, progress };
+      }
+      return acc;
+    }));
+  };
+
   // 同步单个账号
-  const handleSync = async (accountId) => {
+  const handleSync = async (accountId, mode = 'fast') => {
+    // 乐观更新
+    updateLocalAccountsStatus([accountId], 'processing', 0);
+    
     try {
-      await accountApi.sync(accountId);
-      setTimeout(fetchAccounts, 500);
+      await accountApi.sync(accountId, mode);
+      // 减少等待时间，因为我们已经乐观更新了状态
+      setTimeout(fetchAccounts, 200);
     } catch (err) {
       console.error('Sync failed:', err);
       setError('同步失败');
+      // 失败后恢复状态或重新获取
+      fetchAccounts();
     }
   };
 
   // 批量同步
-  const handleBatchSync = async () => {
+  const handleBatchSync = async (mode = 'fast') => {
     if (selectedIds.size === 0) {
-      return handleSyncAll();
+      return handleSyncAll(mode);
     }
     
+    const idsToSync = Array.from(selectedIds);
+    // 乐观更新
+    updateLocalAccountsStatus(idsToSync, 'processing', 0);
     setLoading(true);
+    
     try {
-      await accountApi.batchSync(Array.from(selectedIds));
-      setTimeout(fetchAccounts, 1000);
+      await accountApi.batchSync(idsToSync, mode);
+      setTimeout(fetchAccounts, 500);
       setSelectedIds(new Set());
     } catch (err) {
       console.error('Batch sync failed:', err);
       setError('批量同步失败');
+      fetchAccounts();
     } finally {
       setLoading(false);
     }
   };
 
   // 同步全部
-  const handleSyncAll = async () => {
+  const handleSyncAll = async (mode = 'fast') => {
+    // 乐观更新所有账号
+    const allIds = accounts.map(acc => acc.id);
+    updateLocalAccountsStatus(allIds, 'processing', 0);
     setLoading(true);
+    
     try {
-      await accountApi.syncAll();
-      setTimeout(fetchAccounts, 1000);
+      await accountApi.syncAll(mode);
+      setTimeout(fetchAccounts, 500);
     } catch (err) {
       console.error('Sync all failed:', err);
       setError('同步失败');
+      fetchAccounts();
     } finally {
       setLoading(false);
+    }
+  };
+
+  // 停止同步
+  const handleStopSync = async () => {
+    if (!confirm('确定要停止当前正在进行的同步任务吗？')) return;
+    
+    try {
+      await accountApi.stopSync();
+      setError(null);
+      // 立即刷新一次状态，并在之后继续轮询
+      setTimeout(fetchAccounts, 500);
+    } catch (err) {
+      console.error('Stop sync failed:', err);
+      setError('停止同步失败');
     }
   };
 
@@ -211,7 +285,7 @@ export const ContentArea = ({ activeTab, searchTerm, onAddClick, refreshTrigger,
     URL.revokeObjectURL(url);
   };
 
-  const isProcessing = accounts.some(acc => acc.status === 'processing');
+  const isProcessing = accounts.some(acc => acc.status === 'processing' || acc.status === 'pending');
 
   return (
     <div className="flex-1 bg-gray-50 p-6 overflow-auto">
@@ -226,7 +300,7 @@ export const ContentArea = ({ activeTab, searchTerm, onAddClick, refreshTrigger,
       
       <div className="bg-white rounded-lg shadow-sm border">
         {/* 操作栏 */}
-        <div className="p-4 border-b flex flex-wrap gap-3">
+        <div className="p-4 border-b flex flex-wrap gap-3 items-center">
           <button 
             onClick={onAddClick}
             className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 text-sm flex items-center gap-2"
@@ -234,42 +308,70 @@ export const ContentArea = ({ activeTab, searchTerm, onAddClick, refreshTrigger,
             <span>+ 添加</span>
           </button>
           
+          <div className="h-6 w-px bg-gray-300 mx-1"></div>
+          
           <button 
             onClick={handleBatchImport}
-            className="px-4 py-2 bg-blue-100 text-blue-600 rounded hover:bg-blue-200 text-sm flex items-center gap-1"
+            className="px-3 py-2 bg-gray-100 text-gray-600 rounded hover:bg-gray-200 text-sm flex items-center gap-1"
           >
-            <Upload className="w-3 h-3" /> 批量导入
+            <Upload className="w-3 h-3" /> 导入
           </button>
           
           <button 
             onClick={handleBatchExport}
-            className="px-4 py-2 bg-blue-100 text-blue-600 rounded hover:bg-blue-200 text-sm flex items-center gap-1"
+            className="px-3 py-2 bg-gray-100 text-gray-600 rounded hover:bg-gray-200 text-sm flex items-center gap-1"
           >
-            <Download className="w-3 h-3" /> 批量导出
+            <Download className="w-3 h-3" /> 导出
           </button>
           
           <button 
             onClick={handleDelete}
-            className="px-4 py-2 bg-red-100 text-red-600 rounded hover:bg-red-200 text-sm flex items-center gap-1"
+            className="px-3 py-2 bg-red-50 text-red-600 rounded hover:bg-red-100 text-sm flex items-center gap-1"
             disabled={selectedIds.size === 0}
           >
-            <Trash2 className="w-3 h-3" /> 删除 {selectedIds.size > 0 && `(${selectedIds.size})`}
+            <Trash2 className="w-3 h-3" /> 删除
           </button>
           
-          <button 
-            onClick={handleBatchSync}
-            className="px-4 py-2 bg-gray-100 text-gray-600 rounded hover:bg-gray-200 text-sm flex items-center gap-1"
-            disabled={loading || isProcessing}
-          >
-            <RefreshCw className={`w-3 h-3 ${loading || isProcessing ? 'animate-spin' : ''}`} />
-            {selectedIds.size > 0 ? `同步选中 (${selectedIds.size})` : '同步全部'}
-          </button>
+          <div className="h-6 w-px bg-gray-300 mx-1"></div>
+          
+          {/* 同步控制区 */}
+          {isProcessing ? (
+             <button 
+               onClick={handleStopSync}
+               className="px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600 text-sm flex items-center gap-2 animate-pulse"
+             >
+               <StopCircle className="w-4 h-4" /> 停止同步
+             </button>
+          ) : (
+            <>
+              <button 
+                onClick={() => handleBatchSync('fast')}
+                className="px-4 py-2 bg-green-100 text-green-700 rounded hover:bg-green-200 text-sm flex items-center gap-1 border border-green-200"
+                disabled={loading}
+                title="只更新列表页数据，不采集详情，速度极快"
+              >
+                <Zap className="w-4 h-4" /> 
+                {selectedIds.size > 0 ? `极速同步 (${selectedIds.size})` : '极速同步全部'}
+              </button>
+              
+              <button 
+                onClick={() => handleBatchSync('deep')}
+                className="px-4 py-2 bg-blue-100 text-blue-700 rounded hover:bg-blue-200 text-sm flex items-center gap-1 border border-blue-200"
+                disabled={loading}
+                title="新笔记自动采集详情和素材，旧笔记只更新数据"
+              >
+                <Database className="w-4 h-4" /> 
+                {selectedIds.size > 0 ? `深度同步 (${selectedIds.size})` : '深度同步全部'}
+              </button>
+            </>
+          )}
           
           <button 
             onClick={handleReset} 
-            className="px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600 text-sm flex items-center gap-1 ml-auto"
+            className="px-3 py-2 text-gray-400 hover:text-red-500 rounded text-sm flex items-center gap-1 ml-auto"
+            title="清空所有数据"
           >
-            <Trash2 className="w-3 h-3" /> 清空数据库
+            <Trash2 className="w-3 h-3" /> 清空
           </button>
         </div>
 
@@ -289,6 +391,7 @@ export const ContentArea = ({ activeTab, searchTerm, onAddClick, refreshTrigger,
                 <th className="p-4">#</th>
                 <th className="p-4">头像</th>
                 <th className="p-4">名称</th>
+                <th className="p-4">粉丝数</th>
                 <th className="p-4">最后同步时间</th>
                 <th className="p-4 text-center">笔记总数</th>
                 <th className="p-4 text-center">已采集数</th>
@@ -326,20 +429,28 @@ export const ContentArea = ({ activeTab, searchTerm, onAddClick, refreshTrigger,
                       </div>
                     </td>
                     <td className="p-4 font-medium">{account.name || account.user_id}</td>
+                    <td className="p-4">{account.fans !== undefined ? account.fans : '-'}</td>
                     <td className="p-4 text-gray-500">
                       {account.last_sync ? new Date(account.last_sync).toLocaleString() : '-'}
                     </td>
                     <td className="p-4 text-center">{account.total_msgs || 0}</td>
                     <td className="p-4 text-center">{account.loaded_msgs || 0}</td>
                     <td className="p-4 w-48">
-                      <div className="flex items-center gap-2">
-                        <div className="flex-1 h-2 bg-blue-100 rounded-full overflow-hidden">
-                          <div 
-                            className="h-full bg-blue-500 rounded-full transition-all duration-300"
-                            style={{ width: `${account.progress || 0}%` }}
-                          />
+                      <div className="flex flex-col gap-1">
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1 h-2 bg-blue-100 rounded-full overflow-hidden">
+                            <div 
+                              className="h-full bg-blue-500 rounded-full transition-all duration-300"
+                              style={{ width: `${account.status === 'completed' ? 100 : (account.progress || 0)}%` }}
+                            />
+                          </div>
+                          <span className="text-xs text-gray-500 w-8 text-right">{account.status === 'completed' ? 100 : (account.progress || 0)}%</span>
                         </div>
-                        <span className="text-xs text-gray-500 w-10">{account.progress || 0}%</span>
+                        {account.status === 'processing' && (
+                          <div className="text-xs text-blue-500 transform scale-90 origin-left animate-pulse">
+                            {(account.progress || 0) === 0 ? '正在启动...' : '同步中...'}
+                          </div>
+                        )}
                       </div>
                     </td>
                     <td className="p-4 text-center">
@@ -356,7 +467,7 @@ export const ContentArea = ({ activeTab, searchTerm, onAddClick, refreshTrigger,
                               </div>
                             )}
                           </div>
-                        ) : account.status === 'processing' ? (
+                        ) : (account.status === 'processing' || account.status === 'pending') ? (
                           <RefreshCw className="w-4 h-4 text-blue-500 animate-spin" title="同步中" />
                         ) : (
                           <Circle className="w-4 h-4 text-gray-300" title="待同步" />
@@ -364,19 +475,30 @@ export const ContentArea = ({ activeTab, searchTerm, onAddClick, refreshTrigger,
                         <span className="text-xs text-gray-400">
                           {account.status === 'completed' ? '完成' : 
                            account.status === 'failed' ? '失败' : 
-                           account.status === 'processing' ? '同步中' : '待同步'}
+                           account.status === 'processing' ? '同步中' : 
+                           account.status === 'pending' ? '准备中' : '待同步'}
                         </span>
                       </div>
                     </td>
                     <td className="p-4 text-center">
-                      <button 
-                        className="p-1 hover:bg-gray-100 rounded text-blue-500 disabled:opacity-50"
-                        onClick={() => handleSync(account.id)}
-                        disabled={account.status === 'processing'}
-                        title="同步/采集数据"
-                      >
-                        <RefreshCw className={`w-4 h-4 ${account.status === 'processing' ? 'animate-spin' : ''}`} />
-                      </button>
+                      <div className="flex gap-1 justify-center">
+                        <button 
+                          className="p-1 hover:bg-green-100 rounded text-green-600 disabled:opacity-50"
+                          onClick={() => handleSync(account.id, 'fast')}
+                          disabled={account.status === 'processing'}
+                          title="极速同步"
+                        >
+                          <Zap className="w-4 h-4" />
+                        </button>
+                        <button 
+                          className="p-1 hover:bg-blue-100 rounded text-blue-600 disabled:opacity-50"
+                          onClick={() => handleSync(account.id, 'deep')}
+                          disabled={account.status === 'processing'}
+                          title="深度同步"
+                        >
+                          <Database className="w-4 h-4" />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))

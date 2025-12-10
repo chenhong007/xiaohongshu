@@ -44,6 +44,7 @@ def get_notes():
     liked_count_min = request.args.get('liked_count_min', type=int)
     collected_count_min = request.args.get('collected_count_min', type=int)
     comment_count_min = request.args.get('comment_count_min', type=int)
+    share_count_min = request.args.get('share_count_min', type=int)
     
     page = request.args.get('page', 1, type=int)
     page_size = request.args.get('page_size', 20, type=int)
@@ -73,23 +74,53 @@ def get_notes():
     
     # 时间范围筛选
     from datetime import datetime, timedelta
+    from sqlalchemy import and_, case, func
     
     # 优先使用自定义日期
     if start_date_str or end_date_str:
         if start_date_str:
             try:
                 # 验证日期格式
-                datetime.strptime(start_date_str, '%Y-%m-%d')
+                start_dt = datetime.strptime(start_date_str, '%Y-%m-%d')
                 # upload_time 是字符串格式 (如 "2024-12-01" 或 "2024-12-01 10:30:00")
-                query = query.filter(Note.upload_time >= start_date_str)
+                # 对于空的 upload_time，回退使用 last_updated (同步时间)
+                query = query.filter(
+                    or_(
+                        # upload_time 有值且满足条件
+                        and_(
+                            Note.upload_time.isnot(None),
+                            Note.upload_time != '',
+                            Note.upload_time >= start_date_str
+                        ),
+                        # upload_time 为空但 last_updated 满足条件
+                        and_(
+                            or_(Note.upload_time.is_(None), Note.upload_time == ''),
+                            Note.last_updated >= start_dt
+                        )
+                    )
+                )
             except ValueError:
                 pass
         if end_date_str:
             try:
                 end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
                 # 结束日期加一天，包含当天
-                end_date = end_date + timedelta(days=1)
-                query = query.filter(Note.upload_time < end_date.strftime('%Y-%m-%d'))
+                end_date_next = end_date + timedelta(days=1)
+                query = query.filter(
+                    or_(
+                        # upload_time 有值且满足条件
+                        and_(
+                            Note.upload_time.isnot(None),
+                            Note.upload_time != '',
+                            Note.upload_time < end_date_next.strftime('%Y-%m-%d')
+                        ),
+                        # upload_time 为空但 last_updated 满足条件
+                        and_(
+                            or_(Note.upload_time.is_(None), Note.upload_time == ''),
+                            Note.last_updated < end_date_next
+                        )
+                    )
+                )
             except ValueError:
                 pass
     elif time_range != 'all':
@@ -104,9 +135,24 @@ def get_notes():
             start_date = None
         
         if start_date:
-            # 使用 upload_time (发布时间) 进行过滤，而不是 last_updated (同步时间)
+            # 使用 upload_time (发布时间) 进行过滤
+            # 对于空的 upload_time，回退使用 last_updated (同步时间)
             start_date_str = start_date.strftime('%Y-%m-%d')
-            query = query.filter(Note.upload_time >= start_date_str)
+            query = query.filter(
+                or_(
+                    # upload_time 有值且满足条件
+                    and_(
+                        Note.upload_time.isnot(None),
+                        Note.upload_time != '',
+                        Note.upload_time >= start_date_str
+                    ),
+                    # upload_time 为空但 last_updated 满足条件
+                    and_(
+                        or_(Note.upload_time.is_(None), Note.upload_time == ''),
+                        Note.last_updated >= start_date
+                    )
+                )
+            )
     
     # 类型筛选
     if note_type != 'all':
@@ -119,6 +165,8 @@ def get_notes():
         query = query.filter(Note.collected_count >= collected_count_min)
     if comment_count_min is not None:
         query = query.filter(Note.comment_count >= comment_count_min)
+    if share_count_min is not None:
+        query = query.filter(Note.share_count >= share_count_min)
     
     # 排序
     sort_column = getattr(Note, sort_by, Note.upload_time)

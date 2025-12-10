@@ -107,6 +107,26 @@ def migrate():
                 # 创建索引
                 cursor.execute("CREATE INDEX IF NOT EXISTS ix_notes_user_id ON notes(user_id)")
                 print("  ✓ 已创建索引")
+            else:
+                # 检查并添加缺失的列
+                notes_columns = {
+                    'liked_count': 'INTEGER DEFAULT 0',
+                    'collected_count': 'INTEGER DEFAULT 0',
+                    'comment_count': 'INTEGER DEFAULT 0',
+                    'share_count': 'INTEGER DEFAULT 0',
+                    'video_addr': 'VARCHAR(512)',
+                    'tags': 'TEXT',
+                    'ip_location': 'VARCHAR(64)',
+                }
+                
+                for column_name, column_type in notes_columns.items():
+                    if column_name not in existing_columns:
+                        print(f"添加列 notes.{column_name}")
+                        try:
+                            cursor.execute(f"ALTER TABLE notes ADD COLUMN {column_name} {column_type}")
+                            print(f"  ✓ 成功")
+                        except sqlite3.OperationalError as e:
+                            print(f"  ✗ 失败: {e}")
         else:
             print("notes 表不存在，将由 SQLAlchemy 自动创建")
         

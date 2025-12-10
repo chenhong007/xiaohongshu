@@ -148,18 +148,28 @@ export const accountApi = {
 
   /**
    * 同步单个账号
+   * @param {number} id - 账号ID
+   * @param {string} mode - 同步模式 'fast' | 'deep'
    */
-  sync: (id) => api.post(`/accounts/${id}/sync`),
+  sync: (id, mode = 'fast') => api.post(`/accounts/${id}/sync`, { mode }),
 
   /**
    * 批量同步账号
+   * @param {array} ids - 账号ID列表
+   * @param {string} mode - 同步模式 'fast' | 'deep'
    */
-  batchSync: (ids) => api.post('/accounts/sync-batch', { ids }),
+  batchSync: (ids, mode = 'fast') => api.post('/accounts/sync-batch', { ids, mode }),
 
   /**
    * 同步所有账号
+   * @param {string} mode - 同步模式 'fast' | 'deep'
    */
-  syncAll: () => api.post('/accounts/sync-all'),
+  syncAll: (mode = 'fast') => api.post('/accounts/sync-all', { mode }),
+
+  /**
+   * 停止同步
+   */
+  stopSync: () => api.post('/accounts/stop-sync'),
 
   /**
    * 清空数据库

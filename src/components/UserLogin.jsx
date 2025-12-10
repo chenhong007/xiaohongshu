@@ -5,8 +5,8 @@ import { authApi, COOKIE_INVALID_EVENT } from '../services';
 // 默认头像
 const DEFAULT_AVATAR = "https://api.dicebear.com/7.x/avataaars/svg?seed=Felix";
 
-// 轮询间隔（毫秒）- 2分钟
-const POLL_INTERVAL = 120000;
+// 轮询间隔（毫秒）- 30秒
+const POLL_INTERVAL = 30000;
 
 export const UserLogin = () => {
   const [user, setUser] = useState(null);

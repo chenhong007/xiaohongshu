@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Search, RefreshCw, ChevronDown, Coffee, Download as DownloadIcon, Play, Image, Video, ExternalLink, Trash2, X, Check, Calendar, Heart, Star, MessageCircle, RotateCcw } from 'lucide-react';
+import { Search, RefreshCw, ChevronDown, Coffee, Download as DownloadIcon, Play, Image, Video, ExternalLink, Trash2, X, Check, Calendar, Heart, Star, MessageCircle, RotateCcw, Share2 } from 'lucide-react';
 import { noteApi, accountApi } from '../services';
 
 export const DownloadPage = () => {
@@ -23,6 +23,7 @@ export const DownloadPage = () => {
   const [likedCountMin, setLikedCountMin] = useState('');
   const [collectedCountMin, setCollectedCountMin] = useState('');
   const [commentCountMin, setCommentCountMin] = useState('');
+  const [shareCountMin, setShareCountMin] = useState('');
   
   // 博主选择下拉框状态
   const [bloggerDropdownOpen, setBloggerDropdownOpen] = useState(false);
@@ -103,6 +104,7 @@ export const DownloadPage = () => {
       if (likedCountMin !== '') params.liked_count_min = parseInt(likedCountMin);
       if (collectedCountMin !== '') params.collected_count_min = parseInt(collectedCountMin);
       if (commentCountMin !== '') params.comment_count_min = parseInt(commentCountMin);
+      if (shareCountMin !== '') params.share_count_min = parseInt(shareCountMin);
       
       const result = await noteApi.getAll(params);
       
@@ -116,7 +118,7 @@ export const DownloadPage = () => {
     } finally {
       setLoading(false);
     }
-  }, [page, pageSize, sortBy, sortOrder, selectedUserIds, timeRange, customStartDate, customEndDate, keyword, matchMode, noteType, likedCountMin, collectedCountMin, commentCountMin]);
+  }, [page, pageSize, sortBy, sortOrder, selectedUserIds, timeRange, customStartDate, customEndDate, keyword, matchMode, noteType, likedCountMin, collectedCountMin, commentCountMin, shareCountMin]);
 
   // 页码、排序变化时自动加载（仅在已加载过数据的情况下）
   useEffect(() => {
@@ -169,7 +171,7 @@ export const DownloadPage = () => {
   };
 
   const getSelectedBloggersText = () => {
-    if (selectedUserIds.length === 0) return '全部博主';
+    if (selectedUserIds.length === 0) return `全部博主 (${accounts.length})`;
     if (selectedUserIds.length === 1) {
       const acc = accounts.find(a => a.user_id === selectedUserIds[0]);
       return acc?.name || acc?.user_id || '1位博主';
@@ -310,7 +312,7 @@ export const DownloadPage = () => {
                     <div className={`w-4 h-4 border rounded flex items-center justify-center ${selectedUserIds.length === 0 ? 'bg-red-500 border-red-500' : 'border-gray-300'}`}>
                       {selectedUserIds.length === 0 && <Check className="w-3 h-3 text-white" />}
                     </div>
-                    <span className="text-sm font-medium">全部博主</span>
+                    <span className="text-sm font-medium">全部博主 ({accounts.length})</span>
                   </div>
                   
                   <div className="overflow-y-auto flex-1">
@@ -551,6 +553,12 @@ export const DownloadPage = () => {
                 >
                   评论 <SortIcon field="comment_count" />
                 </th>
+                <th 
+                  className="p-4 cursor-pointer hover:bg-gray-100"
+                  onClick={() => handleSort('share_count')}
+                >
+                  转发 <SortIcon field="share_count" />
+                </th>
                 <th className="p-4">操作</th>
               </tr>
             </thead>
@@ -615,6 +623,7 @@ export const DownloadPage = () => {
                     <td className="p-4 text-center">{note.liked_count || 0}</td>
                     <td className="p-4 text-center">{note.collected_count || 0}</td>
                     <td className="p-4 text-center">{note.comment_count || 0}</td>
+                    <td className="p-4 text-center">{note.share_count || 0}</td>
                     <td className="p-4">
                       <a 
                         href={`https://www.xiaohongshu.com/explore/${note.note_id}`}

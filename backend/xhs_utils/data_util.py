@@ -62,8 +62,94 @@ def handle_user_info(data, user_id):
         'tags': tags,
     }
 
-def handle_note_info(data):
-    note_id = data['id']
+def handle_note_info(data, from_list=False):
+    # 【关键修复】兼容 API 返回的两种字段名：'note_id' 或 'id'
+    note_id = data.get('note_id') or data.get('id')
+    
+    if from_list:
+        # 处理列表页返回的简单数据结构
+        note_id = data.get('note_id') or data.get('id')
+        note_type = data.get('type', 'normal')
+        if note_type == 'normal':
+            note_type = '图集'
+        else:
+            note_type = '视频'
+            
+        user = data.get('user', {})
+        user_id = user.get('user_id', '')
+        home_url = f'https://www.xiaohongshu.com/user/profile/{user_id}' if user_id else ''
+        nickname = user.get('nickname', '')
+        avatar = user.get('avatar', '')
+        
+        title = data.get('display_title', '') or data.get('title', '')
+        if title.strip() == '':
+            title = '无标题'
+            
+        # 列表页可能没有详细描述，尝试获取
+        desc = data.get('desc', '')
+        
+        interact_info = data.get('interact_info', {})
+        liked_count = interact_info.get('liked_count', 0)
+        collected_count = interact_info.get('collected_count', 0)
+        comment_count = interact_info.get('comment_count', 0)
+        share_count = interact_info.get('share_count', 0)
+        
+        # 列表页通常没有完整的图片列表和视频地址，这里设为空或仅处理封面
+        # 如果需要完整数据，必须进入详情页
+        image_list = []
+        video_addr = None
+        video_cover = None
+        
+        # 尝试获取封面图
+        cover = data.get('cover', {})
+        if cover and cover.get('url'):
+            if note_type == '视频':
+                video_cover = cover.get('url')
+            else:
+                image_list.append(cover.get('url'))
+        
+        tags = [] # 列表页通常不包含完整标签
+        
+        # 处理时间
+        # 列表页可能没有精确的时间戳，或者字段名不同
+        # 尝试从多个可能的字段获取时间
+        upload_time = ''
+        if data.get('time'):
+            upload_time = timestamp_to_str(data.get('time'))
+        elif data.get('timestamp'):
+            upload_time = timestamp_to_str(data.get('timestamp'))
+        elif data.get('create_time'):
+            upload_time = timestamp_to_str(data.get('create_time'))
+        
+        # 如果仍然没有时间，使用当前时间作为备用（避免空值导致过滤问题）
+        if not upload_time:
+            from datetime import datetime
+            upload_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+             
+        ip_location = data.get('ip_location', '未知')
+        
+        return {
+            'note_id': note_id,
+            'note_url': f"https://www.xiaohongshu.com/explore/{note_id}",
+            'note_type': note_type,
+            'user_id': user_id,
+            'home_url': home_url,
+            'nickname': nickname,
+            'avatar': avatar,
+            'title': title,
+            'desc': desc,
+            'liked_count': liked_count,
+            'collected_count': collected_count,
+            'comment_count': comment_count,
+            'share_count': share_count,
+            'video_cover': video_cover,
+            'video_addr': video_addr,
+            'image_list': image_list,
+            'tags': tags,
+            'upload_time': upload_time,
+            'ip_location': ip_location,
+        }
+
     note_url = data['url']
     note_type = data['note_card']['type']
     if note_type == 'normal':

@@ -258,6 +258,8 @@ class XHS_Apis():
         """
         cursor = ''
         note_list = []
+        success = True
+        msg = 'success'
         try:
             urlParse = urllib.parse.urlparse(user_url)
             user_id = urlParse.path.split("/")[-1]
@@ -280,21 +282,36 @@ class XHS_Apis():
                     raise Exception("API 返回数据格式错误: data 字段为空")
                 notes = data.get("notes", [])
                 if notes is None:
+                    # 尝试兼容 items 字段
+                    notes = data.get("items", [])
+                if notes is None:
                     notes = []
                 # 为每个笔记添加 xsec_token（来自用户页面 URL）
                 for note in notes:
                     if 'xsec_token' not in note or not note.get('xsec_token'):
                         note['xsec_token'] = xsec_token
-                if 'cursor' in data:
+                
+                # 【关键修复】先添加当前页数据，再检查是否有下一页
+                note_list.extend(notes)
+                
+                # 检查是否有更多数据
+                has_more = data.get("has_more", False)
+                if not has_more or len(notes) == 0:
+                    # 没有更多数据或当前页为空，结束循环
+                    break
+                
+                # 获取下一页的 cursor
+                if 'cursor' in data and data["cursor"]:
                     cursor = str(data["cursor"])
                 else:
+                    # 没有 cursor 但有 has_more=True 是异常情况，记录日志并退出
+                    logger.warning(f"API returned has_more=True but no cursor for user {user_id}")
                     break
-                note_list.extend(notes)
-                if len(notes) == 0 or not data.get("has_more", False):
-                    break
+                    
         except Exception as e:
             success = False
             msg = str(e)
+            logger.error(f"Error getting all notes for user: {e}")
         return success, msg, note_list
 
     def get_user_like_note_info(self, user_id: str, cursor: str, cookies_str: str, xsec_token='', xsec_source='', proxies: dict = None):

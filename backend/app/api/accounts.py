@@ -86,7 +86,8 @@ def batch_delete_accounts():
 @accounts_bp.route('/accounts/<int:account_id>/sync', methods=['POST'])
 def sync_account(account_id):
     """同步单个账号的笔记"""
-    SyncService.start_sync([account_id])
+    mode = request.json.get('mode', 'fast')
+    SyncService.start_sync([account_id], sync_mode=mode)
     return jsonify({'success': True, 'message': 'Sync started'})
 
 
@@ -94,6 +95,7 @@ def sync_account(account_id):
 def sync_batch():
     """批量同步账号"""
     ids = request.json.get('ids', [])
+    mode = request.json.get('mode', 'fast')
     if not ids:
         return jsonify({'error': 'No ids provided'}), 400
     
@@ -104,22 +106,43 @@ def sync_batch():
     )
     db.session.commit()
     
-    SyncService.start_sync(ids)
+    SyncService.start_sync(ids, sync_mode=mode)
     return jsonify({'success': True, 'message': 'Batch sync started'})
 
 
 @accounts_bp.route('/accounts/sync-all', methods=['POST'])
 def sync_all():
     """同步所有账号"""
+    mode = request.json.get('mode', 'fast')
     accounts = Account.query.all()
     ids = [acc.id for acc in accounts]
     
     if ids:
         Account.query.update({'status': 'pending', 'progress': 0})
         db.session.commit()
-        SyncService.start_sync(ids)
+        SyncService.start_sync(ids, sync_mode=mode)
     
     return jsonify({'success': True, 'message': 'Sync all started'})
+
+
+@accounts_bp.route('/accounts/stop-sync', methods=['POST'])
+def stop_sync():
+    """停止同步任务"""
+    SyncService.stop_sync()
+    
+    # 将所有 processing 的任务标记为 cancelled 或 failed
+    # 但由于是在线程中运行，可能需要一点时间才能完全停止
+    # 这里我们只是设置标志，具体的数据库状态更新最好在线程结束时处理
+    # 或者我们可以强制更新所有 processing 的状态
+    
+    Account.query.filter_by(status='processing').update(
+        {'status': 'pending', 'error_message': '用户手动停止同步'}, 
+        synchronize_session=False
+    )
+    db.session.commit()
+    
+    return jsonify({'success': True, 'message': 'Sync stopping'})
+
 
 
 @accounts_bp.route('/reset', methods=['POST'])

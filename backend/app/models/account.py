@@ -47,13 +47,13 @@ class Account(db.Model):
             'fans': self.fans,
             'follows': self.follows,
             'interaction': self.interaction,
-            'last_sync': self.last_sync.isoformat() if self.last_sync else None,
+            'last_sync': self.last_sync.isoformat() + 'Z' if self.last_sync else None,
             'total_msgs': self.total_msgs,
             'loaded_msgs': self.loaded_msgs,
             'progress': self.progress,
             'status': self.status,
             'error_message': self.error_message,
-            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'created_at': self.created_at.isoformat() + 'Z' if self.created_at else None,
         }
     
     def __repr__(self):
