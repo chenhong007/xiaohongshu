@@ -1,0 +1,78 @@
+# Docker Compose 配置 - 多服务共存版本
+# 当服务器上有多个项目时使用此配置
+# 
+# 使用方法：
+# 1. 先启动 nginx-proxy 网络: docker network create nginx-proxy
+# 2. 启动本服务: docker compose -f docker-compose.multi.yml up -d
+# 3. 确保主 Nginx 代理已配置（见 nginx/nginx-multi-site.conf）
+
+version: '3.8'
+
+services:
+  # 前端服务 (仅构建静态文件，由主 Nginx 代理)
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.multi
+    container_name: xhs-frontend
+    restart: unless-stopped
+    volumes:
+      - frontend-dist:/app/dist
+    networks:
+      - xhs-internal
+
+  # 后端服务
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: xhs-backend
+    restart: unless-stopped
+    environment:
+      - FLASK_ENV=production
+      - SECRET_KEY=${SECRET_KEY}
+      - COOKIE_ENCRYPTION_KEY=${COOKIE_ENCRYPTION_KEY}
+      - ADMIN_API_KEY=${ADMIN_API_KEY}
+      - DATABASE_URL=sqlite:///xhs_data.db
+      - CORS_ORIGINS=http://xhs.aitop.ink,https://xhs.aitop.ink
+      - LOG_LEVEL=WARNING
+    volumes:
+      - xhs-data:/app
+      - xhs-media:/app/datas/media_datas
+      - xhs-excel:/app/datas/excel_datas
+    networks:
+      - xhs-internal
+      - nginx-proxy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # 本项目的 Nginx（作为静态文件服务器）
+  nginx:
+    image: nginx:alpine
+    container_name: xhs-nginx
+    restart: unless-stopped
+    volumes:
+      - frontend-dist:/usr/share/nginx/html:ro
+      - ./nginx/nginx-internal.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - frontend
+      - backend
+    networks:
+      - xhs-internal
+      - nginx-proxy
+
+networks:
+  xhs-internal:
+    driver: bridge
+  nginx-proxy:
+    external: true
+
+volumes:
+  frontend-dist:
+  xhs-data:
+  xhs-media:
+  xhs-excel:
+

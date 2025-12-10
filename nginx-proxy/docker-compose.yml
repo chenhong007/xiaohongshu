@@ -1,0 +1,43 @@
+# 主 Nginx 代理 - 多站点入口
+# 
+# 部署在服务器上作为所有网站的入口
+# 根据域名将请求转发到不同的后端服务
+#
+# 使用方法：
+# 1. 创建网络: docker network create nginx-proxy
+# 2. 启动代理: docker compose up -d
+# 3. 各项目加入 nginx-proxy 网络即可
+
+version: '3.8'
+
+services:
+  nginx-proxy:
+    image: nginx:alpine
+    container_name: nginx-proxy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./conf.d:/etc/nginx/conf.d
+      - ./certs:/etc/nginx/certs
+      - ./certbot/conf:/etc/letsencrypt
+      - ./certbot/www:/var/www/certbot
+    networks:
+      - nginx-proxy
+    command: "/bin/sh -c 'while :; do sleep 6h & wait $${!}; nginx -s reload; done & nginx -g \"daemon off;\"'"
+
+  # Certbot - SSL 证书管理
+  certbot:
+    image: certbot/certbot
+    container_name: certbot
+    restart: unless-stopped
+    volumes:
+      - ./certbot/conf:/etc/letsencrypt
+      - ./certbot/www:/var/www/certbot
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
+
+networks:
+  nginx-proxy:
+    external: true
+
