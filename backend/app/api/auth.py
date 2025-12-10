@@ -1,23 +1,33 @@
 """
 认证相关 API
 """
-from flask import Blueprint, jsonify, request, current_app
-from datetime import datetime, timedelta
+from flask import Blueprint, request, current_app
+from datetime import datetime
 
 from ..extensions import db
 from ..models import Cookie
+from ..utils.responses import ApiResponse, success_response
+from ..utils.validators import validate_cookie_str
+from ..utils.crypto import encrypt_cookie, decrypt_cookie, get_crypto
+from ..utils.logger import get_logger
 
 auth_bp = Blueprint('auth', __name__)
+logger = get_logger('auth')
 
 # Cookie 验证间隔（秒）- 5分钟内不重复验证
 COOKIE_CHECK_INTERVAL = 300
 
 
 def get_active_cookie():
-    """获取当前激活的 Cookie"""
+    """
+    获取当前激活的 Cookie（已解密）
+    
+    Returns:
+        Cookie 字符串或空字符串
+    """
     cookie = Cookie.query.filter_by(is_active=True, is_valid=True).first()
     if cookie:
-        return cookie.cookie_str
+        return cookie.get_cookie_str()
     # 如果数据库没有，尝试从配置获取
     return current_app.config.get('XHS_COOKIES', '')
 
@@ -36,6 +46,7 @@ def invalidate_cookie(cookie_id=None):
         cookie.is_valid = False
         cookie.last_checked = datetime.utcnow()
         db.session.commit()
+        logger.info(f"Cookie {cookie.id} 已标记失效")
         return True
     return False
 
@@ -64,7 +75,10 @@ def validate_cookie_if_needed(cookie, force=False):
     try:
         from apis.xhs_pc_apis import XHS_Apis
         xhs_apis = XHS_Apis()
-        success, msg, res = xhs_apis.get_user_self_info(cookie.cookie_str)
+        
+        # 获取解密后的 Cookie
+        cookie_str = cookie.get_cookie_str()
+        success, msg, res = xhs_apis.get_user_self_info(cookie_str)
         
         # 更新验证状态
         cookie.last_checked = datetime.utcnow()
@@ -84,7 +98,7 @@ def validate_cookie_if_needed(cookie, force=False):
         return success, res.get('data') if success else None
         
     except Exception as e:
-        current_app.logger.error(f"Cookie validation error: {e}")
+        logger.error(f"Cookie validation error: {e}")
         cookie.last_checked = datetime.utcnow()
         cookie.is_valid = False
         db.session.commit()
@@ -102,7 +116,7 @@ def extract_user_info(res_data):
     # 获取昵称（尝试多个字段）
     nickname = basic_info.get('nickname') or res_data.get('nickname') or '未知用户'
     
-    # 获取头像（尝试多个字段：imageb, images, avatar, head_photo, image）
+    # 获取头像（尝试多个字段）
     avatar = (basic_info.get('imageb') or basic_info.get('images') or 
               basic_info.get('avatar') or basic_info.get('head_photo') or
               res_data.get('imageb') or res_data.get('images') or 
@@ -120,8 +134,9 @@ def extract_user_info(res_data):
 def get_current_user():
     """
     获取当前登录用户信息
-    支持参数:
-    - force_check: 是否强制验证 Cookie（默认 false）
+    
+    Query Parameters:
+        - force_check: 是否强制验证 Cookie（默认 false）
     """
     force_check = request.args.get('force_check', 'false').lower() == 'true'
     
@@ -132,23 +147,26 @@ def get_current_user():
         if force_check or should_validate_cookie(cookie):
             is_valid, _ = validate_cookie_if_needed(cookie, force=force_check)
             if not is_valid:
-                return jsonify({
+                return success_response({
                     'is_connected': False,
-                    'was_connected': True,  # 标记之前是连接状态
+                    'was_connected': True,
                     'message': 'Cookie 已失效，请重新登录'
                 })
         
         # Cookie 有效，返回用户信息
         if cookie.is_valid:
-            return jsonify({
+            # 检查是否使用了安全加密
+            crypto = get_crypto()
+            return success_response({
                 'is_connected': True,
                 'user_id': cookie.user_id,
                 'nickname': cookie.nickname,
                 'avatar': cookie.avatar,
                 'last_checked': cookie.last_checked.isoformat() if cookie.last_checked else None,
+                'is_secure': crypto.is_secure,  # 告知前端是否安全存储
             })
         else:
-            return jsonify({
+            return success_response({
                 'is_connected': False,
                 'was_connected': True,
                 'message': 'Cookie 已失效，请重新登录'
@@ -157,7 +175,6 @@ def get_current_user():
     # 检查配置中的 Cookie
     cookies_str = current_app.config.get('XHS_COOKIES', '')
     if cookies_str:
-        # 尝试验证 Cookie 并获取用户信息
         try:
             from apis.xhs_pc_apis import XHS_Apis
             xhs_apis = XHS_Apis()
@@ -165,16 +182,16 @@ def get_current_user():
             
             if success and res.get('data'):
                 user_id, nickname, avatar = extract_user_info(res['data'])
-                return jsonify({
+                return success_response({
                     'is_connected': True,
                     'user_id': user_id,
                     'nickname': nickname,
                     'avatar': avatar,
                 })
         except Exception as e:
-            current_app.logger.error(f"Failed to validate cookie: {e}")
+            logger.error(f"Failed to validate cookie: {e}")
     
-    return jsonify({
+    return success_response({
         'is_connected': False,
         'message': '未连接小红书账号'
     })
@@ -186,21 +203,26 @@ def login():
     触发登录流程
     可以扩展为打开浏览器自动登录获取 Cookie
     """
-    # 这里暂时返回提示信息，实际可以集成自动化登录脚本
-    return jsonify({
-        'success': True,
-        'message': '请手动添加 Cookie 或使用自动登录脚本'
-    })
+    return success_response(
+        message='请手动添加 Cookie 或使用自动登录脚本'
+    )
 
 
 @auth_bp.route('/cookie/manual', methods=['POST'])
 def manual_cookie():
-    """手动添加 Cookie"""
-    data = request.json
-    cookie_str = data.get('cookies', '')
+    """
+    手动添加 Cookie
     
-    if not cookie_str:
-        return jsonify({'error': 'Cookie 不能为空'}), 400
+    Request Body:
+        - cookies: Cookie 字符串
+    """
+    data = request.json or {}
+    cookie_str = data.get('cookies', '').strip()
+    
+    # 验证 Cookie 格式
+    is_valid, error_msg = validate_cookie_str(cookie_str)
+    if not is_valid:
+        return ApiResponse.validation_error(error_msg)
     
     # 验证 Cookie 有效性
     try:
@@ -209,19 +231,18 @@ def manual_cookie():
         success, msg, res = xhs_apis.get_user_self_info(cookie_str)
         
         if not success:
-            return jsonify({'error': f'Cookie 无效: {msg}'}), 400
+            return ApiResponse.error(f'Cookie 无效: {msg}', 400, 'INVALID_COOKIE')
         
-        # 使用统一的提取函数
+        # 提取用户信息
         user_id, nickname, avatar = extract_user_info(res.get('data', {}))
         
-        current_app.logger.info(f"Extracted user info: user_id={user_id}, nickname={nickname}, avatar={avatar[:50] if avatar else 'None'}...")
+        logger.info(f"Cookie 验证成功: user_id={user_id}, nickname={nickname}")
         
         # 将之前的 Cookie 设为非激活
         Cookie.query.update({'is_active': False})
         
-        # 保存新 Cookie
+        # 保存新 Cookie（加密存储）
         cookie = Cookie(
-            cookie_str=cookie_str,
             user_id=user_id,
             nickname=nickname,
             avatar=avatar,
@@ -229,21 +250,28 @@ def manual_cookie():
             is_valid=True,
             last_checked=datetime.utcnow()
         )
+        # 使用加密方法设置 Cookie
+        cookie.set_cookie_str(cookie_str)
+        
         db.session.add(cookie)
         db.session.commit()
         
-        return jsonify({
-            'success': True,
-            'data': {
+        # 检查是否安全存储
+        crypto = get_crypto()
+        
+        return success_response(
+            data={
                 'user_id': user_id,
                 'nickname': nickname,
                 'avatar': avatar,
-            }
-        })
+                'is_secure': crypto.is_secure,
+            },
+            message='Cookie 添加成功' + ('' if crypto.is_secure else ' (警告: 未启用加密存储)')
+        )
         
     except Exception as e:
-        current_app.logger.error(f"Cookie validation error: {e}")
-        return jsonify({'error': f'Cookie 验证失败: {str(e)}'}), 400
+        logger.error(f"Cookie validation error: {e}")
+        return ApiResponse.error(f'Cookie 验证失败: {str(e)}', 400, 'VALIDATION_FAILED')
 
 
 @auth_bp.route('/cookie/check', methods=['POST'])
@@ -252,7 +280,7 @@ def check_cookie():
     cookie = Cookie.query.filter_by(is_active=True).first()
     
     if not cookie:
-        return jsonify({
+        return success_response({
             'is_valid': False,
             'message': '没有激活的 Cookie'
         })
@@ -260,7 +288,7 @@ def check_cookie():
     # 强制验证
     is_valid, _ = validate_cookie_if_needed(cookie, force=True)
     
-    return jsonify({
+    return success_response({
         'is_valid': is_valid,
         'message': 'Cookie 有效' if is_valid else 'Cookie 已失效',
         'last_checked': cookie.last_checked.isoformat() if cookie.last_checked else None
@@ -274,7 +302,7 @@ def invalidate_current_cookie():
     用于其他 API 调用检测到 Cookie 失效时调用
     """
     success = invalidate_cookie()
-    return jsonify({
+    return success_response({
         'success': success,
         'message': 'Cookie 已标记失效' if success else '没有激活的 Cookie'
     })
@@ -285,5 +313,5 @@ def logout():
     """登出（停用当前 Cookie）"""
     Cookie.query.filter_by(is_active=True).update({'is_active': False})
     db.session.commit()
-    return jsonify({'success': True})
-
+    logger.info("用户已登出")
+    return success_response(message='已登出')

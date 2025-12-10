@@ -1,7 +1,12 @@
 /**
  * API 服务层 - 统一管理所有 API 请求
+ * 
+ * 适配后端统一响应格式:
+ * 成功: { success: true, message: '...', data: ... }
+ * 失败: { success: false, error: { code: '...', message: '...' } }
  */
 
+// API 版本，可切换为 '/api/v1' 使用新版本
 const BASE_URL = '/api';
 
 // Cookie 失效事件名
@@ -13,22 +18,55 @@ const emitCookieInvalid = () => {
 };
 
 /**
+ * 自定义 API 错误类
+ */
+class ApiError extends Error {
+  constructor(message, status, data = null, errorCode = 'UNKNOWN') {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.data = data;
+    this.errorCode = errorCode;
+  }
+}
+
+/**
  * 统一请求处理
  */
 class ApiService {
+  constructor() {
+    // 可配置的管理员 API Key（用于危险操作）
+    this.adminApiKey = null;
+  }
+
+  /**
+   * 设置管理员 API Key
+   */
+  setAdminApiKey(key) {
+    this.adminApiKey = key;
+  }
+
   /**
    * 发送请求
    * @param {string} endpoint - API 端点
    * @param {object} options - 请求选项
+   * @param {boolean} requireAdmin - 是否需要管理员权限
    */
-  async request(endpoint, options = {}) {
+  async request(endpoint, options = {}, requireAdmin = false) {
     const url = `${BASE_URL}${endpoint}`;
     
+    const headers = {
+      'Content-Type': 'application/json',
+      ...options.headers,
+    };
+
+    // 添加管理员 API Key
+    if (requireAdmin && this.adminApiKey) {
+      headers['X-API-Key'] = this.adminApiKey;
+    }
+
     const config = {
-      headers: {
-        'Content-Type': 'application/json',
-        ...options.headers,
-      },
+      headers,
       ...options,
     };
 
@@ -54,7 +92,10 @@ class ApiService {
       const data = await response.json();
       
       if (!response.ok) {
-        const error = new ApiError(data.error || data.message || '请求失败', response.status, data);
+        // 新的错误响应格式
+        const errorMessage = data.error?.message || data.message || data.error || '请求失败';
+        const errorCode = data.error?.code || 'UNKNOWN';
+        const error = new ApiError(errorMessage, response.status, data, errorCode);
         
         // 检测是否是 Cookie 失效相关错误
         if (this.isCookieInvalidError(error, data)) {
@@ -62,6 +103,12 @@ class ApiService {
         }
         
         throw error;
+      }
+      
+      // 新的成功响应格式：返回 data 字段或整个响应
+      // 兼容旧格式（直接返回数组）和新格式（{ success, data }）
+      if (data.success !== undefined) {
+        return data.data !== undefined ? data.data : data;
       }
       
       return data;
@@ -77,6 +124,11 @@ class ApiService {
    * 判断是否是 Cookie 失效错误
    */
   isCookieInvalidError(error, data) {
+    // 检查错误代码
+    if (data.error?.code === 'UNAUTHORIZED' || data.error?.code === 'INVALID_COOKIE') {
+      return true;
+    }
+    
     // 检测常见的 Cookie 失效标志
     const invalidKeywords = ['cookie', '登录', '未授权', 'unauthorized', 'auth', '失效', '过期'];
     const errorMsg = (error.message || '').toLowerCase();
@@ -91,27 +143,15 @@ class ApiService {
     return this.request(endpoint, { method: 'GET', params });
   }
 
-  post(endpoint, data) {
+  post(endpoint, data, requireAdmin = false) {
     return this.request(endpoint, { 
       method: 'POST', 
       body: JSON.stringify(data) 
-    });
+    }, requireAdmin);
   }
 
   delete(endpoint) {
     return this.request(endpoint, { method: 'DELETE' });
-  }
-}
-
-/**
- * 自定义 API 错误类
- */
-class ApiError extends Error {
-  constructor(message, status, data = null) {
-    super(message);
-    this.name = 'ApiError';
-    this.status = status;
-    this.data = data;
   }
 }
 
@@ -172,9 +212,9 @@ export const accountApi = {
   stopSync: () => api.post('/accounts/stop-sync'),
 
   /**
-   * 清空数据库
+   * 清空数据库（需要管理员权限）
    */
-  reset: () => api.post('/reset'),
+  reset: () => api.post('/reset', {}, true),
 };
 
 // ==================== 笔记相关 API ====================
@@ -261,6 +301,16 @@ export const searchApi = {
   searchNotes: (params) => api.get('/search/notes', params),
 };
 
+// ==================== 工具函数 ====================
+
+/**
+ * 设置管理员 API Key
+ * 用于执行危险操作（如清空数据库）
+ */
+export const setAdminApiKey = (key) => {
+  api.setAdminApiKey(key);
+};
+
 // 导出错误类供外部使用
 export { ApiError };
 
@@ -270,5 +320,5 @@ export default {
   note: noteApi,
   auth: authApi,
   search: searchApi,
+  setAdminApiKey,
 };
-

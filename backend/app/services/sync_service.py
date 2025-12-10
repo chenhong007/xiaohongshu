@@ -9,6 +9,10 @@ from flask import current_app
 
 from ..extensions import db
 from ..models import Account, Note, Cookie
+from ..utils.logger import get_logger, log_sync_event
+
+# 获取日志器
+logger = get_logger('sync')
 
 
 class SyncService:
@@ -19,15 +23,15 @@ class SyncService:
     @staticmethod
     def stop_sync():
         """停止同步任务"""
-        print("Stopping sync...")
+        logger.info("正在停止同步任务...")
         SyncService._stop_event.set()
 
     @staticmethod
     def _handle_auth_error(msg):
-        """检查错误信息是否为认证错误，如果是则标记 Cookie 失效"""
+        """检查错误信息是否为认证错误,如果是则标记Cookie失效"""
         auth_errors = ['未登录', '登录已过期', '需要登录', '401', '403', 'Unauthorized']
         if any(error in str(msg) for error in auth_errors):
-            print(f"Detected auth error: {msg}. Invalidating cookie...")
+            logger.warning(f"检测到认证错误: {msg},正在标记Cookie失效...")
             try:
                 # 重新查询当前激活的 cookie
                 cookie = Cookie.query.filter_by(is_active=True).first()
@@ -35,22 +39,23 @@ class SyncService:
                     cookie.is_valid = False
                     cookie.last_checked = datetime.utcnow()
                     db.session.commit()
-                    print("Cookie marked as invalid.")
+                    logger.info("Cookie 已标记为失效")
                 return True
             except Exception as e:
-                print(f"Error invalidating cookie: {e}")
+                logger.error(f"标记Cookie失效时出错: {e}")
         return False
 
     @staticmethod
     def get_cookie_str():
-        """获取有效的 Cookie 字符串"""
+        """获取有效的Cookie字符串（已解密）"""
         cookie = Cookie.query.filter_by(is_active=True, is_valid=True).first()
         if cookie:
-            return cookie.cookie_str
+            # 使用新的解密方法
+            return cookie.get_cookie_str()
         
         # 从配置获取
         from ..config import Config
-        return Config.XHS_COOKIES
+        return getattr(Config, 'XHS_COOKIES', '')
     
     @staticmethod
     def start_sync(account_ids, sync_mode='fast'):
@@ -64,6 +69,8 @@ class SyncService:
         thread = threading.Thread(target=SyncService._run_sync, args=(app, account_ids, sync_mode))
         thread.daemon = True
         thread.start()
+        
+        logger.info(f"同步任务已启动: {len(account_ids)} 个账号, 模式: {sync_mode}")
     
     @staticmethod
     def _run_sync(app, account_ids, sync_mode):
@@ -74,13 +81,13 @@ class SyncService:
     @staticmethod
     def _sync_accounts(account_ids, sync_mode):
         """同步账号的笔记数据"""
-        print(f"Starting sync for accounts: {account_ids}, mode: {sync_mode}")
+        logger.info(f"开始同步账号: {account_ids}, 模式: {sync_mode}")
         
         cookie_str = SyncService.get_cookie_str()
         if not cookie_str:
-            print("No valid cookie found")
+            logger.error("未找到有效的 Cookie")
             Account.query.filter(Account.id.in_(account_ids)).update(
-                {'status': 'failed', 'error_message': '未找到有效的 Cookie，请先登录小红书'},
+                {'status': 'failed', 'error_message': '未找到有效的Cookie,请先登录小红书'},
                 synchronize_session=False
             )
             db.session.commit()
@@ -91,8 +98,8 @@ class SyncService:
             from xhs_utils.data_util import handle_note_info
             xhs_apis = XHS_Apis()
         except Exception as e:
-            error_msg = f"初始化 API 失败: {e}"
-            print(f"Failed to init XHS APIs: {e}")
+            error_msg = f"初始化API失败: {e}"
+            logger.error(f"初始化XHS APIs失败: {e}")
             Account.query.filter(Account.id.in_(account_ids)).update(
                 {'status': 'failed', 'error_message': error_msg},
                 synchronize_session=False
@@ -103,7 +110,7 @@ class SyncService:
         for acc_id in account_ids:
             # 检查是否停止
             if SyncService._stop_event.is_set():
-                print("Sync stopped by user")
+                logger.info("同步已被用户停止")
                 break
                 
             try:
@@ -111,19 +118,19 @@ class SyncService:
                 if not account:
                     continue
                 
-                # 更新状态为处理中，清除之前的错误信息
+                # 更新状态为处理中,清除之前的错误信息
                 account.status = 'processing'
                 account.progress = 0
                 account.error_message = None
                 db.session.commit()
                 
-                # 构建用户 URL，包含 xsec_token 用于 API 验证
+                # 构建用户URL,包含xsec_token用于API验证
                 xsec_token = account.xsec_token or ''
                 warning_msg = None
                 
-                # 如果没有 xsec_token，尝试获取
+                # 如果没有xsec_token,尝试获取
                 if not xsec_token:
-                    print(f"No xsec_token for account {account.user_id}, attempting to fetch...")
+                    logger.info(f"No xsec_token for account {account.user_id}, attempting to fetch...")
                     try:
                         success_token, msg_token, fetched_token = xhs_apis.get_user_xsec_token(account.user_id, cookie_str)
                         if success_token and fetched_token:
@@ -131,79 +138,79 @@ class SyncService:
                             # 保存到数据库以便后续使用
                             account.xsec_token = xsec_token
                             db.session.commit()
-                            print(f"Successfully fetched xsec_token for {account.user_id}")
+                            logger.info(f"Successfully fetched xsec_token for {account.user_id}")
                         else:
-                            print(f"Could not fetch xsec_token: {msg_token}")
+                            logger.info(f"Could not fetch xsec_token: {msg_token}")
                     except Exception as e:
-                        print(f"Error fetching xsec_token: {e}")
+                        logger.info(f"Error fetching xsec_token: {e}")
                 
                 if xsec_token:
                     user_url = f'https://www.xiaohongshu.com/user/profile/{account.user_id}?xsec_token={xsec_token}&xsec_source=pc_search'
                 else:
                     user_url = f'https://www.xiaohongshu.com/user/profile/{account.user_id}'
-                    warning_msg = f"缺少 xsec_token，可能导致同步失败"
-                    print(f"Warning: No xsec_token for account {account.user_id}, sync may fail")
+                    warning_msg = f"缺少xsec_token,可能导致同步失败"
+                    logger.info(f"Warning: No xsec_token for account {account.user_id}, sync may fail")
                 
                 # 获取用户所有笔记列表
                 success, msg, all_note_info = xhs_apis.get_user_all_notes(user_url, cookie_str)
                 
-                # 策略优化：如果获取成功但列表为空，尝试强制刷新 xsec_token 并重试一次
-                # 这解决了一些因 token 过期或无效导致看似成功但无数据的问题
+                # 策略优化:如果获取成功但列表为空,尝试强制刷新xsec_token并重试一次
+                # 这解决了一些因token过期或无效导致看似成功但无数据的问题
                 if success and not all_note_info:
-                    print(f"Got 0 notes for {account.user_id}, attempting to refresh xsec_token and retry...")
+                    logger.info(f"Got 0 notes for {account.user_id}, attempting to refresh xsec_token and retry...")
                     try:
                         # 强制重新获取 token
                         success_token, msg_token, fetched_token = xhs_apis.get_user_xsec_token(account.user_id, cookie_str)
                         
                         if success_token and fetched_token:
-                            # 即使 token 一样也可能是服务端状态问题，但通常不一样
+                            # 即使token一样也可能是服务端状态问题,但通常不一样
                             if fetched_token != xsec_token:
-                                print(f"Refreshed xsec_token: {fetched_token[:10]}...")
+                                logger.info(f"Refreshed xsec_token: {fetched_token[:10]}...")
                                 xsec_token = fetched_token
                                 account.xsec_token = xsec_token
                                 db.session.commit()
                                 
-                                # 使用新 token 重试
+                                # 使用新token重试
                                 user_url = f'https://www.xiaohongshu.com/user/profile/{account.user_id}?xsec_token={xsec_token}&xsec_source=pc_search'
                                 success_retry, msg_retry, all_note_info_retry = xhs_apis.get_user_all_notes(user_url, cookie_str)
                                 
                                 if success_retry and all_note_info_retry:
-                                    print(f"Retry success! Got {len(all_note_info_retry)} notes.")
+                                    logger.info(f"Retry success! Got {len(all_note_info_retry)} notes.")
                                     success = success_retry
                                     msg = msg_retry
                                     all_note_info = all_note_info_retry
                                 else:
-                                    print(f"Retry result: success={success_retry}, count={len(all_note_info_retry) if all_note_info_retry else 0}")
+                                    logger.info(f"Retry result: success={success_retry}, count={len(all_note_info_retry) if all_note_info_retry else 0}")
                             else:
                                 print("Fetched token is identical to current token, skipping retry.")
                         else:
-                            print(f"Failed to refresh token: {msg_token}")
+                            logger.info(f"Failed to refresh token: {msg_token}")
                     except Exception as e:
-                        print(f"Error during token refresh retry: {e}")
+                        logger.info(f"Error during token refresh retry: {e}")
 
                 if not success:
                     # 检查是否为认证错误
                     if SyncService._handle_auth_error(msg):
-                        error_msg = f"Cookie 已失效，请重新登录。原始错误: {msg}"
-                        # 标记停止，不再尝试后续账号
+                        error_msg = f"Cookie已失效,请重新登录。原始错误: {msg}"
+                        # 标记停止,不再尝试后续账号
                         SyncService.stop_sync()
                     else:
                         error_msg = f"获取笔记列表失败: {msg}"
 
                     if warning_msg:
                         error_msg = f"{warning_msg}。{error_msg}"
-                    print(f"Failed to get notes for {account.user_id}: {msg}")
+                    logger.info(f"Failed to get notes for {account.user_id}: {msg}")
                     account.status = 'failed'
                     account.error_message = error_msg
                     db.session.commit()
                     continue
                 
-                # 【关键修复】如果 API 成功但返回空列表，标记为失败而不是继续
+                # 【关键修复】如果API成功但返回空列表,标记为失败而不是继续
                 if success and not all_note_info:
-                    error_msg = "获取笔记列表为空，可能是 xsec_token 失效或该用户没有公开笔记"
+                    error_msg = "获取笔记列表为空,可能是xsec_token失效或该用户没有公开笔记"
                     if warning_msg:
                         error_msg = f"{warning_msg}。{error_msg}"
-                    print(f"Empty notes for {account.user_id} after all retries")
+                    logger.info(f"Empty notes for {account.user_id} after all retries")
                     account.status = 'failed'
                     account.error_message = error_msg
                     account.total_msgs = 0
@@ -237,21 +244,21 @@ class SyncService:
                                     account.interaction = interaction.get('count')
                             
                             db.session.commit()
-                            print(f"Updated user info for {account.user_id}: fans={account.fans}")
+                            logger.info(f"Updated user info for {account.user_id}: fans={account.fans}")
                 except Exception as e:
-                    print(f"Failed to update user info for {account.user_id}: {e}")
+                    logger.info(f"Failed to update user info for {account.user_id}: {e}")
                 
                 total = len(all_note_info)
                 account.total_msgs = total
-                # 不再重置 loaded_msgs 为 0，而是保留之前的值，或者根据实际情况更新
-                # 如果是全新的同步开始，可能需要重置，但如果是增量或者状态更新，这会让人困惑
-                # 现在的逻辑是：每次同步都是从头遍历所有笔记，所以重置为 0 是合理的，
-                # 但如果 total > 0 且最后 success，loaded_msgs 应该等于 total
+                # 不再重置loaded_msgs为0,而是保留之前的值,或者根据实际情况更新
+                # 如果是全新的同步开始,可能需要重置,但如果是增量或者状态更新,这会让人困惑
+                # 现在的逻辑是:每次同步都是从头遍历所有笔记,所以重置为0是合理的
+                # 但如果total > 0且最终success,loaded_msgs应该等于total
                 account.loaded_msgs = 0 
                 db.session.commit()
                 
                 # 处理每个笔记
-                # 使用账号的 xsec_token 作为后备，如果笔记自带 xsec_token 则优先使用
+                # 使用账号的xsec_token作为后备,如果笔记自带xsec_token则优先使用
                 account_xsec_token = account.xsec_token or ''
                 for idx, simple_note in enumerate(all_note_info):
                     # 检查是否停止
@@ -259,72 +266,72 @@ class SyncService:
                         print("Sync stopped by user during note processing")
                         break
 
-                    # 【关键修复】兼容 API 返回的两种字段名：'note_id' 或 'id'
+                    # 【关键修复】兼容API返回的两种字段名:'note_id'和'id'
                     note_id = simple_note.get('note_id') or simple_note.get('id')
-                    # 优先使用笔记自带的 xsec_token（由 get_user_all_notes 添加），否则使用账号的
+                    # 优先使用笔记自带的xsec_token（由get_user_all_notes添加）,否则使用账号的
                     note_xsec_token = simple_note.get('xsec_token') or account_xsec_token
                     note_url = f"https://www.xiaohongshu.com/explore/{note_id}?xsec_token={note_xsec_token}"
                     
                     need_fetch_detail = False
                     
                     if sync_mode == 'deep':
-                        # 方案 B：深度同步 (增量模式)
+                        # 方案B:深度同步(增量模式)
                         # 检查数据库中是否存在该笔记
                         existing_note = Note.query.filter_by(note_id=note_id).first()
                         
                         if not existing_note:
                             need_fetch_detail = True
                         else:
-                            # 检查关键媒体字段是否缺失 (可能是之前极速同步的)
+                            # 检查关键媒体字段是否缺失(可能是之前极速同步的)
                             if existing_note.type == '视频' and not existing_note.video_addr:
                                 need_fetch_detail = True
                             elif (existing_note.type == '图集' or existing_note.type == 'normal') and \
                                  (not existing_note.image_list or existing_note.image_list == '[]'):
                                 need_fetch_detail = True
                     else:
-                        # 方案 A：极速同步
-                        # 永远只使用列表页数据，不获取详情
+                        # 方案A:极速同步
+                        # 永远只使用列表页数据,不获取详情
                         need_fetch_detail = False
 
                     if not need_fetch_detail:
-                        # 极速更新 (只更新互动数据)
-                        # 【重要说明】列表页 API 只返回点赞数，不返回收藏、评论、转发数和发布时间
+                        # 极速更新(只更新互动数据)
+                        # 【重要说明】列表页API只返回点赞数,不返回收藏、评论、转发数和发布时间
                         try:
                             # 从列表页数据中提取互动信息
                             cleaned_data = handle_note_info(simple_note, from_list=True)
                             
                             if sync_mode == 'deep':
-                                # 深度模式下，如果是旧笔记，只更新点赞数（列表页唯一可用的互动数据）
+                                # 深度模式下,如果是旧笔记,只更新点赞数（列表页唯一可用的互动数据）
                                 existing_note = Note.query.filter_by(note_id=note_id).first()
                                 if existing_note:
-                                    # 只更新点赞数，其他数据保留（因为列表页不提供）
+                                    # 只更新点赞数,其他数据保留（因为列表页不提供）
                                     if cleaned_data['liked_count'] is not None:
                                         existing_note.liked_count = cleaned_data['liked_count']
                                     existing_note.last_updated = datetime.utcnow()
                                     db.session.commit()
                             else:
-                                # 极速模式下，保存/更新笔记
-                                # _save_note 会智能处理 None 值（不覆盖已有数据）
+                                # 极速模式下,保存/更新笔记
+                                # _save_note会智能处理None值（不覆盖已有数据）
                                 SyncService._save_note(cleaned_data)
                                 
                         except Exception as e:
-                            print(f"Error quick updating note {note_id}: {e}")
+                            logger.info(f"Error quick updating note {note_id}: {e}")
                     else:
-                        # 需要获取详情 (深度模式下的新笔记或缺失素材笔记)
+                        # 需要获取详情(深度模式下的新笔记或缺失素材笔记)
                         success, msg, note_detail = xhs_apis.get_note_info(note_url, cookie_str)
                         
                         if not success:
                              # 检查认证错误
                              if SyncService._handle_auth_error(msg):
-                                 print(f"Auth error during note detail fetch: {msg}")
+                                 logger.info(f"Auth error during note detail fetch: {msg}")
                                  SyncService.stop_sync()
                                  account.status = 'failed'
-                                 account.error_message = f"Cookie 已失效，同步终止。错误: {msg}"
+                                 account.error_message = f"Cookie已失效,同步终止。错误: {msg}"
                                  break
 
                         if success and note_detail:
                             try:
-                                # 安全访问嵌套数据，防止 NoneType 错误
+                                # 安全访问嵌套数据,防止NoneType错误
                                 data = note_detail.get('data')
                                 if data and data.get('items') and len(data['items']) > 0:
                                     note_data = data['items'][0]
@@ -332,22 +339,22 @@ class SyncService:
                                     cleaned_data = handle_note_info(note_data, from_list=False)
                                     SyncService._save_note(cleaned_data)
                                 else:
-                                    print(f"Note {note_id} has no valid data")
+                                    logger.info(f"Note {note_id} has no valid data")
                             except Exception as e:
-                                print(f"Error parsing note {note_id}: {e}")
+                                logger.info(f"Error parsing note {note_id}: {e}")
                         
-                        # 请求间隔，避免被封（仅在请求详情页时等待）
+                        # 请求间隔,避免被封（仅在请求详情页时等待）
                         time.sleep(1)
                     
                     # 更新进度
-                    # 只有在确实处理了笔记时才更新 loaded_msgs? 
-                    # 不，我们遍历了列表，所以应该算是"已处理"（即使是跳过详情获取）
-                    # 但为了界面显示准确，如果 total 为 0，progress 设为 100
+                    # 只有在确实处理了笔记时才更新loaded_msgs?
+                    # 不,我们遍历了列表,所以应该算作已处理（即使是跳过详情获取）
+                    # 但为了界面显示准确,如果total为0,progress设为100
                     account.loaded_msgs = idx + 1
                     account.progress = int(((idx + 1) / total) * 100) if total > 0 else 100
                     db.session.commit()
                     
-                    # 极速模式下不需要 sleep
+                    # 极速模式下不需要sleep
                     if sync_mode == 'fast':
                         # time.sleep(0.05) 
                         pass
@@ -355,14 +362,14 @@ class SyncService:
                 # 完成同步
                 if not SyncService._stop_event.is_set():
                     account.status = 'completed'
-                    # 确保进度为 100%
+                    # 确保进度为100%
                     account.progress = 100
-                    # 确保 loaded_msgs 等于 total，即使中途有跳过的情况（只要不是报错退出）
+                    # 确保loaded_msgs等于total,即使中途有跳过的情况（只要不是报错退出）
                     # 因为我们遍历了所有笔记列表
                     account.loaded_msgs = total
                     account.last_sync = datetime.utcnow()
                 else:
-                    # 如果是因为停止而退出循环，且状态仍为 processing
+                    # 如果是因为停止而退出循环,且状态仍为processing
                     if account.status == 'processing':
                         account.status = 'failed'
                         account.error_message = account.error_message or "用户手动停止同步"
@@ -370,8 +377,8 @@ class SyncService:
                 db.session.commit()
                 
             except Exception as e:
-                print(f"Error syncing account {acc_id}: {e}")
-                # 先回滚 session，避免 PendingRollbackError
+                logger.info(f"Error syncing account {acc_id}: {e}")
+                # 先回滚session,避免PendingRollbackError
                 db.session.rollback()
                 try:
                     account = Account.query.get(acc_id)
@@ -380,42 +387,42 @@ class SyncService:
                         account.error_message = f"同步出错: {str(e)}"
                         db.session.commit()
                 except Exception as inner_e:
-                    print(f"Error updating account status: {inner_e}")
+                    logger.info(f"Error updating account status: {inner_e}")
                     db.session.rollback()
     
     @staticmethod
     def _save_note(note_data):
-        """保存笔记到数据库（使用 merge 避免重复插入）
+        """保存笔记到数据库（使用merge避免重复插入）
         
         【重要说明】
-        列表页 API 只返回部分数据（点赞数），不返回收藏、评论、转发数和发布时间。
-        当这些字段为 None 时，表示"数据不可用"，应保留数据库中的现有值。
+        列表页API只返回部分数据（点赞数）,不返回收藏、评论、转发数和发布时间。
+        当这些字段为None时,表示"数据不可用",应保留数据库中的现有值。
         """
         try:
-            # 【关键检查】确保 note_id 不为空
+            # 【关键检查】确保note_id不为空
             note_id = note_data.get('note_id')
             if not note_id:
-                print(f"Skipping note save: note_id is empty. Data: {note_data.get('title', 'unknown')}")
+                logger.info(f"Skipping note save: note_id is empty. Data: {note_data.get('title', 'unknown')}")
                 return
             
-            # 使用 merge 实现 upsert 语义，避免唯一约束冲突
+            # 使用merge实现upsert语义,避免唯一约束冲突
             note = Note.query.filter_by(note_id=note_id).first()
             
             if note:
-                # 更新现有笔记 - 只更新非 None 的字段
+                # 更新现有笔记 - 只更新非None的字段
                 note.nickname = note_data['nickname']
                 note.avatar = note_data['avatar']
                 note.title = note_data['title']
-                # desc 可能为空字符串，但不应覆盖现有描述（除非详情页明确返回）
+                # desc可能为空字符串,但不应覆盖现有描述（除非详情页明确返回）
                 if note_data['desc'] is not None and note_data['desc'] != '':
                     note.desc = note_data['desc']
                 note.type = note_data['note_type']
                 
-                # 【关键逻辑】互动数据：只有非 None 时才更新
-                # liked_count 列表页有返回，始终更新
+                # 【关键逻辑】互动数据:只有非None时才更新
+                # liked_count列表页有返回,始终更新
                 if note_data['liked_count'] is not None:
                     note.liked_count = note_data['liked_count']
-                # collected_count、comment_count、share_count 列表页不返回（为 None），保留原值
+                # collected_count、comment_count、share_count列表页不返回（为None）,保留原值
                 if note_data['collected_count'] is not None:
                     note.collected_count = note_data['collected_count']
                 if note_data['comment_count'] is not None:
@@ -423,11 +430,11 @@ class SyncService:
                 if note_data['share_count'] is not None:
                     note.share_count = note_data['share_count']
                 
-                # 【关键逻辑】发布时间：列表页不返回（为 None），保留原值
+                # 【关键逻辑】发布时间:列表页不返回（为None）,保留原值
                 if note_data['upload_time'] is not None:
                     note.upload_time = note_data['upload_time']
                 
-                # 媒体数据：只有非空时才更新
+                # 媒体数据:只有非空时才更新
                 if note_data['video_addr']:
                     note.video_addr = note_data['video_addr']
                 if note_data['image_list']:
@@ -439,7 +446,7 @@ class SyncService:
                     
                 note.last_updated = datetime.utcnow()
             else:
-                # 创建新笔记 - None 值转为默认值
+                # 创建新笔记 - None值转为默认值
                 note = Note(
                     note_id=note_id,
                     user_id=note_data['user_id'],
@@ -462,9 +469,8 @@ class SyncService:
             
             db.session.commit()
         except Exception as e:
-            # 发生异常时回滚 session，避免 PendingRollbackError
+            # 发生异常时回滚session,避免PendingRollbackError
             db.session.rollback()
-            print(f"Error saving note {note_data.get('note_id')}: {e}")
+            logger.info(f"Error saving note {note_data.get('note_id')}: {e}")
             # 重新抛出异常让上层处理
             raise
-

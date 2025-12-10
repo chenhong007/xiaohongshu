@@ -1,20 +1,23 @@
 """
 Flask 应用工厂
 """
+import os
 import sqlite3
 from flask import Flask
 from flask_cors import CORS
 
-from .config import Config
+from .config import Config, get_config
 from .extensions import db
 from .api import accounts_bp, notes_bp, auth_bp, search_bp
+from .utils.logger import setup_logger, get_logger
 
 
 def migrate_database(db_path):
     """检查并添加缺失的数据库列"""
-    import os
     if not os.path.exists(db_path):
         return
+    
+    logger = get_logger('migration')
     
     try:
         conn = sqlite3.connect(db_path)
@@ -33,6 +36,7 @@ def migrate_database(db_path):
         # 需要添加的列
         columns_to_add = {
             'red_id': 'VARCHAR(64)',
+            'xsec_token': 'VARCHAR(256)',
             'desc': 'TEXT',
             'fans': 'INTEGER DEFAULT 0',
             'follows': 'INTEGER DEFAULT 0',
@@ -42,6 +46,7 @@ def migrate_database(db_path):
             'loaded_msgs': 'INTEGER DEFAULT 0',
             'progress': 'INTEGER DEFAULT 0',
             'status': "VARCHAR(32) DEFAULT 'pending'",
+            'error_message': 'TEXT',
             'created_at': 'DATETIME',
             'updated_at': 'DATETIME',
         }
@@ -50,30 +55,70 @@ def migrate_database(db_path):
             if column_name not in existing_columns:
                 try:
                     cursor.execute(f"ALTER TABLE accounts ADD COLUMN {column_name} {column_type}")
-                    print(f"[迁移] 添加列 accounts.{column_name}")
+                    logger.info(f"添加列 accounts.{column_name}")
                 except sqlite3.OperationalError:
                     pass
+        
+        # 检查 cookies 表
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='cookies'")
+        if cursor.fetchone():
+            cursor.execute("PRAGMA table_info(cookies)")
+            cookie_columns = [row[1] for row in cursor.fetchall()]
+            
+            cookie_columns_to_add = {
+                'encrypted_cookie': 'TEXT',  # 新增加密字段
+            }
+            
+            for column_name, column_type in cookie_columns_to_add.items():
+                if column_name not in cookie_columns:
+                    try:
+                        cursor.execute(f"ALTER TABLE cookies ADD COLUMN {column_name} {column_type}")
+                        logger.info(f"添加列 cookies.{column_name}")
+                    except sqlite3.OperationalError:
+                        pass
         
         conn.commit()
         conn.close()
     except Exception as e:
-        print(f"[迁移] 数据库迁移检查失败: {e}")
+        logger.error(f"数据库迁移检查失败: {e}")
 
 
-def create_app(config_class=Config):
+def create_app(config_class=None):
     """创建并配置 Flask 应用"""
+    # 如果没有指定配置，根据环境变量自动选择
+    if config_class is None:
+        config_class = get_config()
+    
     app = Flask(__name__)
     app.config.from_object(config_class)
     
-    # 初始化扩展
-    CORS(app, resources={r"/api/*": {"origins": "*"}})
+    # 初始化日志
+    setup_logger(
+        log_level=app.config.get('LOG_LEVEL', 'INFO'),
+        log_file=app.config.get('LOG_FILE')
+    )
+    
+    logger = get_logger('app')
+    
+    # 初始化 CORS（使用配置的域名列表）
+    cors_config = config_class.get_cors_config()
+    CORS(app, resources={r"/api/*": cors_config})
+    
+    # 初始化数据库扩展
     db.init_app(app)
     
     # 注册蓝图
+    # 保持向后兼容，同时支持 /api 和 /api/v1
     app.register_blueprint(accounts_bp, url_prefix='/api')
     app.register_blueprint(notes_bp, url_prefix='/api')
     app.register_blueprint(auth_bp, url_prefix='/api')
     app.register_blueprint(search_bp, url_prefix='/api')
+    
+    # API v1 版本（推荐使用）
+    app.register_blueprint(accounts_bp, url_prefix='/api/v1', name='accounts_v1')
+    app.register_blueprint(notes_bp, url_prefix='/api/v1', name='notes_v1')
+    app.register_blueprint(auth_bp, url_prefix='/api/v1', name='auth_v1')
+    app.register_blueprint(search_bp, url_prefix='/api/v1', name='search_v1')
     
     # 数据库迁移检查（在 create_all 之前）
     db_uri = app.config.get('SQLALCHEMY_DATABASE_URI', '')
@@ -88,21 +133,57 @@ def create_app(config_class=Config):
     # 注册错误处理
     register_error_handlers(app)
     
+    # 注册请求钩子
+    register_request_hooks(app)
+    
+    logger.info(f"应用初始化完成，数据库: {db_uri}")
+    
     return app
 
 
 def register_error_handlers(app):
     """注册全局错误处理"""
+    from .utils.responses import ApiResponse
     
     @app.errorhandler(400)
     def bad_request(error):
-        return {'error': 'Bad Request', 'message': str(error.description)}, 400
+        return ApiResponse.error(
+            str(error.description) if hasattr(error, 'description') else '请求参数错误',
+            400, 'BAD_REQUEST'
+        )
     
     @app.errorhandler(404)
     def not_found(error):
-        return {'error': 'Not Found', 'message': str(error.description)}, 404
+        return ApiResponse.not_found(
+            str(error.description) if hasattr(error, 'description') else '资源不存在'
+        )
+    
+    @app.errorhandler(405)
+    def method_not_allowed(error):
+        return ApiResponse.error('请求方法不允许', 405, 'METHOD_NOT_ALLOWED')
     
     @app.errorhandler(500)
     def internal_error(error):
-        return {'error': 'Internal Server Error', 'message': '服务器内部错误'}, 500
+        logger = get_logger('error')
+        logger.exception(error)
+        return ApiResponse.server_error('服务器内部错误')
 
+
+def register_request_hooks(app):
+    """注册请求钩子"""
+    import time
+    from flask import g, request
+    
+    @app.before_request
+    def before_request():
+        g.start_time = time.time()
+    
+    @app.after_request
+    def after_request(response):
+        if hasattr(g, 'start_time'):
+            duration = (time.time() - g.start_time) * 1000
+            # 可以在这里记录请求日志
+            if duration > 1000:  # 记录慢请求
+                logger = get_logger('slow_request')
+                logger.warning(f"Slow request: {request.method} {request.path} took {duration:.2f}ms")
+        return response

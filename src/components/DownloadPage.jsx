@@ -108,9 +108,10 @@ export const DownloadPage = () => {
       
       const result = await noteApi.getAll(params);
       
-      if (result.success) {
-        setNotes(result.data.items || []);
-        setTotalCount(result.data.total || 0);
+      // api.js 已经自动解包了 data 字段，所以 result 直接是 { items, total, ... }
+      if (result && result.items !== undefined) {
+        setNotes(result.items || []);
+        setTotalCount(result.total || 0);
         setDataLoaded(true);
       }
     } catch (err) {
