@@ -1,5 +1,5 @@
 # Docker Compose 配置 - 带 SSL 支持
-# 域名: xhs.aitop.ink
+# 域名: xhs.topai.ink
 # 使用 Let's Encrypt 自动获取 SSL 证书
 
 version: '3.8'
@@ -47,7 +47,7 @@ services:
       - COOKIE_ENCRYPTION_KEY=${COOKIE_ENCRYPTION_KEY}
       - ADMIN_API_KEY=${ADMIN_API_KEY}
       - DATABASE_URL=sqlite:///xhs_data.db
-      - CORS_ORIGINS=https://xhs.aitop.ink,http://xhs.aitop.ink
+      - CORS_ORIGINS=https://xhs.topai.ink,http://xhs.topai.ink
       - LOG_LEVEL=WARNING
     volumes:
       - xhs-data:/app

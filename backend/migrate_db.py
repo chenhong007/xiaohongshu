@@ -28,6 +28,30 @@ def migrate():
     cursor = conn.cursor()
     
     try:
+        # ==================== 迁移 cookies 表 ====================
+        if table_exists(cursor, 'cookies'):
+            existing_columns = get_existing_columns(cursor, 'cookies')
+            print(f"cookies 表现有列: {existing_columns}")
+            
+            # 需要添加的列定义 - 运行时长统计相关
+            cookies_columns = {
+                'run_start_time': 'DATETIME',
+                'total_run_seconds': 'INTEGER DEFAULT 0',
+                'last_valid_duration': 'INTEGER DEFAULT 0',
+                'invalidated_at': 'DATETIME',
+            }
+            
+            for column_name, column_type in cookies_columns.items():
+                if column_name not in existing_columns:
+                    print(f"添加列 cookies.{column_name}")
+                    try:
+                        cursor.execute(f"ALTER TABLE cookies ADD COLUMN {column_name} {column_type}")
+                        print(f"  ✓ 成功")
+                    except sqlite3.OperationalError as e:
+                        print(f"  ✗ 失败: {e}")
+        else:
+            print("cookies 表不存在，将由 SQLAlchemy 自动创建")
+        
         # ==================== 迁移 accounts 表 ====================
         if table_exists(cursor, 'accounts'):
             existing_columns = get_existing_columns(cursor, 'accounts')
@@ -143,6 +167,12 @@ def migrate():
         if table_exists(cursor, 'notes'):
             print("\n迁移后的 notes 表结构:")
             cursor.execute("PRAGMA table_info(notes)")
+            for row in cursor.fetchall():
+                print(f"  {row[1]}: {row[2]}")
+        
+        if table_exists(cursor, 'cookies'):
+            print("\n迁移后的 cookies 表结构:")
+            cursor.execute("PRAGMA table_info(cookies)")
             for row in cursor.fetchall():
                 print(f"  {row[1]}: {row[2]}")
             

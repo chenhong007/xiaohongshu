@@ -252,6 +252,109 @@ export const noteApi = {
   export: (noteIds, format = 'json') => api.post('/notes/export', { note_ids: noteIds, format }),
 };
 
+// ==================== 加密工具 ====================
+
+/**
+ * AES-256-CBC 加密（用于 Cookie 传输加密）
+ */
+class CookieEncryption {
+  constructor() {
+    this.key = null;
+    this.keyPromise = null;
+  }
+
+  /**
+   * 获取传输加密密钥
+   */
+  async getKey() {
+    if (this.key) return this.key;
+    
+    if (!this.keyPromise) {
+      this.keyPromise = api.get('/cookie/transport-key').then(data => {
+        this.key = data.key;
+        return this.key;
+      });
+    }
+    
+    return this.keyPromise;
+  }
+
+  /**
+   * 加密 Cookie 字符串
+   * 使用 AES-256-CBC 加密
+   */
+  async encrypt(cookieStr) {
+    const keyBase64 = await this.getKey();
+    
+    // 检查是否支持 Web Crypto API
+    if (window.crypto && window.crypto.subtle) {
+      try {
+        // 将 Base64 密钥转换为 ArrayBuffer
+        const keyBytes = Uint8Array.from(atob(keyBase64), c => c.charCodeAt(0));
+        
+        // 生成随机 IV
+        const iv = window.crypto.getRandomValues(new Uint8Array(16));
+        
+        // 导入密钥
+        const cryptoKey = await window.crypto.subtle.importKey(
+          'raw',
+          keyBytes,
+          { name: 'AES-CBC' },
+          false,
+          ['encrypt']
+        );
+        
+        // 加密数据（需要手动添加 PKCS7 填充）
+        const encoder = new TextEncoder();
+        const data = encoder.encode(cookieStr);
+        const paddingLength = 16 - (data.length % 16);
+        const paddedData = new Uint8Array(data.length + paddingLength);
+        paddedData.set(data);
+        paddedData.fill(paddingLength, data.length);
+        
+        const encrypted = await window.crypto.subtle.encrypt(
+          { name: 'AES-CBC', iv },
+          cryptoKey,
+          paddedData
+        );
+        
+        // 转换为 Base64
+        const encryptedBase64 = btoa(String.fromCharCode(...new Uint8Array(encrypted)));
+        const ivBase64 = btoa(String.fromCharCode(...iv));
+        
+        return { encrypted: encryptedBase64, iv: ivBase64 };
+      } catch (error) {
+        console.warn('Web Crypto API encryption failed, falling back to XOR:', error);
+        return this.simpleEncrypt(cookieStr, keyBase64);
+      }
+    } else {
+      // 后备方案：简单 XOR 加密
+      return this.simpleEncrypt(cookieStr, keyBase64);
+    }
+  }
+
+  /**
+   * 简单 XOR 加密（后备方案）
+   */
+  simpleEncrypt(text, keyBase64) {
+    const keyBytes = Uint8Array.from(atob(keyBase64), c => c.charCodeAt(0));
+    const textBytes = new TextEncoder().encode(text);
+    const result = new Uint8Array(textBytes.length);
+    
+    for (let i = 0; i < textBytes.length; i++) {
+      result[i] = textBytes[i] ^ keyBytes[i % keyBytes.length];
+    }
+    
+    return {
+      encrypted: 'XOR:' + btoa(String.fromCharCode(...result)),
+      iv: ''
+    };
+  }
+}
+
+// 全局加密实例
+const cookieEncryption = new CookieEncryption();
+
 // ==================== 认证相关 API ====================
 
 export const authApi = {
@@ -267,9 +370,20 @@ export const authApi = {
   login: () => api.post('/login'),
 
   /**
-   * 手动添加 Cookie
+   * 手动添加 Cookie（明文传输 - 不推荐）
    */
   setManualCookie: (cookies) => api.post('/cookie/manual', { cookies }),
+
+  /**
+   * 手动添加 Cookie（加密传输 - 推荐）
+   */
+  setManualCookieEncrypted: async (cookies) => {
+    const { encrypted, iv } = await cookieEncryption.encrypt(cookies);
+    return api.post('/cookie/manual-encrypted', { 
+      encrypted_cookies: encrypted, 
+      iv 
+    });
+  },
 
   /**
    * 检查 Cookie 有效性（强制验证）
@@ -285,6 +399,21 @@ export const authApi = {
    * 登出
    */
   logout: () => api.post('/logout'),
+
+  /**
+   * 获取 Cookie 历史记录
+   */
+  getCookieHistory: () => api.get('/cookie/history'),
+
+  /**
+   * 重新激活历史 Cookie
+   */
+  reactivateCookie: (cookieId) => api.post(`/cookie/reactivate/${cookieId}`),
+
+  /**
+   * 获取传输加密密钥
+   */
+  getTransportKey: () => api.get('/cookie/transport-key'),
 };
 
 // ==================== 搜索相关 API ====================
