@@ -78,18 +78,37 @@ def validate_cookie_if_needed(cookie, force=False):
         
         # 获取解密后的 Cookie
         cookie_str = cookie.get_cookie_str()
+        
+        # 先尝试 v1 selfinfo 接口
         success, msg, res = xhs_apis.get_user_self_info(cookie_str)
+        logger.info(f"[validate_cookie] selfinfo v1 返回: success={success}, msg={msg}")
+        
+        # 如果 v1 成功，再尝试 v2 接口获取更详细的信息
+        res2_data = None
+        if success:
+            try:
+                success2, msg2, res2 = xhs_apis.get_user_self_info2(cookie_str)
+                logger.info(f"[validate_cookie] selfinfo v2 返回: success={success2}, msg={msg2}")
+                if success2 and res2.get('data'):
+                    res2_data = res2['data']
+                    logger.info(f"[validate_cookie] v2 数据键: {list(res2_data.keys()) if isinstance(res2_data, dict) else type(res2_data)}")
+            except Exception as e:
+                logger.warning(f"[validate_cookie] v2 接口调用失败: {e}")
         
         # 更新验证状态
         cookie.last_checked = datetime.utcnow()
         cookie.is_valid = success
         
         if success and res.get('data'):
+            # 优先使用 v2 数据（如果有），否则使用 v1 数据
+            data_to_use = res2_data if res2_data else res['data']
+            logger.info(f"[validate_cookie] 使用{'v2' if res2_data else 'v1'}数据提取用户信息")
+            
             # 更新用户信息（可能有变化）
-            user_id, nickname, avatar = extract_user_info(res['data'])
+            user_id, nickname, avatar = extract_user_info(data_to_use)
             if user_id:
                 cookie.user_id = user_id
-            if nickname:
+            if nickname and nickname != '未知用户':
                 cookie.nickname = nickname
             if avatar:
                 cookie.avatar = avatar
@@ -110,22 +129,41 @@ def extract_user_info(res_data):
     if not res_data:
         return None, None, None
     
+    # 调试：打印 API 返回的原始数据结构
+    logger.info(f"[extract_user_info] 原始数据键: {list(res_data.keys()) if isinstance(res_data, dict) else type(res_data)}")
+    
     # 尝试获取 basic_info，如果不存在则使用 data 本身
     basic_info = res_data.get('basic_info', res_data)
     
+    # 调试：打印 basic_info 的键
+    if basic_info and basic_info != res_data:
+        logger.info(f"[extract_user_info] basic_info 键: {list(basic_info.keys()) if isinstance(basic_info, dict) else type(basic_info)}")
+    
     # 获取昵称（尝试多个字段）
-    nickname = basic_info.get('nickname') or res_data.get('nickname') or '未知用户'
+    # selfinfo 接口可能返回 'nickname' 直接在根级别
+    nickname = (basic_info.get('nickname') or 
+                res_data.get('nickname') or 
+                res_data.get('nick_name') or
+                '未知用户')
     
     # 获取头像（尝试多个字段）
+    # selfinfo 接口可能使用 'headPhoto' 或 'head_photo' 或 'image'
     avatar = (basic_info.get('imageb') or basic_info.get('images') or 
               basic_info.get('avatar') or basic_info.get('head_photo') or
+              basic_info.get('headPhoto') or
               res_data.get('imageb') or res_data.get('images') or 
               res_data.get('avatar') or res_data.get('head_photo') or 
+              res_data.get('headPhoto') or
               res_data.get('image') or '')
     
     # 获取用户ID（尝试多个字段）
-    user_id = (basic_info.get('user_id') or basic_info.get('red_id') or 
-               res_data.get('user_id') or res_data.get('red_id') or '')
+    # selfinfo 接口可能使用 'userId' 或 'user_id'
+    user_id = (basic_info.get('user_id') or basic_info.get('userId') or
+               basic_info.get('red_id') or basic_info.get('redId') or
+               res_data.get('user_id') or res_data.get('userId') or
+               res_data.get('red_id') or res_data.get('redId') or '')
+    
+    logger.info(f"[extract_user_info] 提取结果: user_id={user_id}, nickname={nickname}, avatar={avatar[:50] if avatar else 'None'}...")
     
     return user_id, nickname, avatar
 
@@ -228,15 +266,33 @@ def manual_cookie():
     try:
         from apis.xhs_pc_apis import XHS_Apis
         xhs_apis = XHS_Apis()
+        
+        # 先用 v1 接口验证
         success, msg, res = xhs_apis.get_user_self_info(cookie_str)
+        logger.info(f"[manual_cookie] selfinfo v1: success={success}, msg={msg}")
         
         if not success:
             return ApiResponse.error(f'Cookie 无效: {msg}', 400, 'INVALID_COOKIE')
         
-        # 提取用户信息
-        user_id, nickname, avatar = extract_user_info(res.get('data', {}))
+        # 尝试 v2 接口获取更详细的信息
+        res2_data = None
+        try:
+            success2, msg2, res2 = xhs_apis.get_user_self_info2(cookie_str)
+            logger.info(f"[manual_cookie] selfinfo v2: success={success2}, msg={msg2}")
+            if success2 and res2.get('data'):
+                res2_data = res2['data']
+                logger.info(f"[manual_cookie] v2 数据: {list(res2_data.keys()) if isinstance(res2_data, dict) else type(res2_data)}")
+        except Exception as e:
+            logger.warning(f"[manual_cookie] v2 接口调用失败: {e}")
         
-        logger.info(f"Cookie 验证成功: user_id={user_id}, nickname={nickname}")
+        # 优先使用 v2 数据（如果有），否则使用 v1 数据
+        data_to_use = res2_data if res2_data else res.get('data', {})
+        logger.info(f"[manual_cookie] 使用{'v2' if res2_data else 'v1'}数据提取用户信息")
+        
+        # 提取用户信息
+        user_id, nickname, avatar = extract_user_info(data_to_use)
+        
+        logger.info(f"Cookie 验证成功: user_id={user_id}, nickname={nickname}, avatar={avatar[:50] if avatar else 'None'}...")
         
         # 将之前的 Cookie 设为非激活
         Cookie.query.update({'is_active': False})
@@ -315,3 +371,59 @@ def logout():
     db.session.commit()
     logger.info("用户已登出")
     return success_response(message='已登出')
+
+
+@auth_bp.route('/cookie/debug', methods=['GET'])
+def debug_cookie():
+    """
+    调试接口：返回 Cookie 验证时 API 返回的原始数据
+    仅用于调试，生产环境应禁用
+    """
+    cookie = Cookie.query.filter_by(is_active=True).first()
+    
+    if not cookie:
+        return success_response({
+            'error': '没有激活的 Cookie'
+        })
+    
+    cookie_str = cookie.get_cookie_str()
+    if not cookie_str:
+        return success_response({
+            'error': 'Cookie 字符串为空'
+        })
+    
+    try:
+        from apis.xhs_pc_apis import XHS_Apis
+        xhs_apis = XHS_Apis()
+        
+        # 获取 v1 接口数据
+        success1, msg1, res1 = xhs_apis.get_user_self_info(cookie_str)
+        
+        # 获取 v2 接口数据
+        success2, msg2, res2 = xhs_apis.get_user_self_info2(cookie_str)
+        
+        return success_response({
+            'database_info': {
+                'id': cookie.id,
+                'user_id': cookie.user_id,
+                'nickname': cookie.nickname,
+                'avatar': cookie.avatar,
+                'is_active': cookie.is_active,
+                'is_valid': cookie.is_valid,
+                'last_checked': cookie.last_checked.isoformat() if cookie.last_checked else None,
+            },
+            'selfinfo_v1': {
+                'success': success1,
+                'msg': msg1,
+                'data': res1.get('data') if res1 else None,
+            },
+            'selfinfo_v2': {
+                'success': success2,
+                'msg': msg2,
+                'data': res2.get('data') if res2 else None,
+            }
+        })
+    except Exception as e:
+        return success_response({
+            'error': str(e)
+        })

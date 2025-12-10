@@ -1,11 +1,11 @@
 import React, { useState, useCallback } from 'react';
+import { Routes, Route, Navigate } from 'react-router-dom';
 import { Sidebar } from './components/Sidebar';
 import { ContentArea } from './components/ContentArea';
 import { DownloadPage } from './components/DownloadPage';
 import { searchApi, accountApi } from './services';
 
 function App() {
-  const [activeTab, setActiveTab] = useState('accounts');
   const [searchTerm, setSearchTerm] = useState('');
   const [isSearchVisible, setIsSearchVisible] = useState(false);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
@@ -66,8 +66,6 @@ function App() {
   return (
     <div className="flex h-screen w-full bg-gray-100 font-sans">
       <Sidebar 
-        activeTab={activeTab} 
-        setActiveTab={setActiveTab} 
         onSearch={setSearchTerm}
         isSearchVisible={isSearchVisible}
         onSearchUsers={handleSearchUsers}
@@ -75,31 +73,51 @@ function App() {
         onCancelSearch={() => setIsSearchVisible(false)}
       />
       <main className="flex-1 flex flex-col overflow-hidden">
-        <div className="p-6 pb-0">
-          <h2 className="text-2xl font-bold text-gray-800">
-            {activeTab === 'accounts' && '博主管理'}
-            {activeTab === 'download' && '笔记下载'}
-            {activeTab === 'settings' && '系统设置'}
-          </h2>
-        </div>
-        
-        {activeTab === 'accounts' && (
-          <ContentArea 
-            activeTab={activeTab} 
-            searchTerm={searchTerm} 
-            onAddClick={() => setIsSearchVisible(true)}
-            refreshTrigger={refreshTrigger}
-            onRefresh={triggerRefresh}
+        <Routes>
+          <Route 
+            path="/accounts" 
+            element={
+              <>
+                <div className="p-6 pb-0">
+                  <h2 className="text-2xl font-bold text-gray-800">博主管理</h2>
+                </div>
+                <ContentArea 
+                  searchTerm={searchTerm} 
+                  onAddClick={() => setIsSearchVisible(true)}
+                  refreshTrigger={refreshTrigger}
+                  onRefresh={triggerRefresh}
+                />
+              </>
+            } 
           />
-        )}
-        {activeTab === 'download' && (
-          <DownloadPage />
-        )}
-        {activeTab === 'settings' && (
-          <div className="flex-1 p-6 flex items-center justify-center text-gray-400">
-            Feature coming soon...
-          </div>
-        )}
+          <Route 
+            path="/download" 
+            element={
+              <>
+                <div className="p-6 pb-0">
+                  <h2 className="text-2xl font-bold text-gray-800">笔记下载</h2>
+                </div>
+                <DownloadPage />
+              </>
+            } 
+          />
+          <Route 
+            path="/settings" 
+            element={
+              <>
+                <div className="p-6 pb-0">
+                  <h2 className="text-2xl font-bold text-gray-800">系统设置</h2>
+                </div>
+                <div className="flex-1 p-6 flex items-center justify-center text-gray-400">
+                  Feature coming soon...
+                </div>
+              </>
+            } 
+          />
+          {/* 默认重定向到 /accounts */}
+          <Route path="/" element={<Navigate to="/accounts" replace />} />
+          <Route path="*" element={<Navigate to="/accounts" replace />} />
+        </Routes>
       </main>
     </div>
   );
