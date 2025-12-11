@@ -3,9 +3,17 @@ import { Search, RefreshCw, ChevronDown, Coffee, Download as DownloadIcon, Play,
 import { noteApi, accountApi } from '../services';
 
 // 图片预览组件 - 使用 state 跟踪有效的图片 URL，确保小图和悬浮大图使用相同的源
+// 修复问题：
+// 1. 使用 fixed 定位避免被 overflow:hidden 父容器裁剪
+// 2. 使用 hover state 而非纯 CSS group-hover，确保控制更精确
+// 3. 预加载大图避免悬浮时才开始加载导致空白
+// 4. 动态计算位置避免超出视口
 const PreviewImage = ({ previewSrc, remoteSrc, imageList }) => {
   const [validSrc, setValidSrc] = useState(previewSrc);
   const [loadFailed, setLoadFailed] = useState(false);
+  const [showPopup, setShowPopup] = useState(false);
+  const [popupPosition, setPopupPosition] = useState({ top: 0, left: 0 });
+  const thumbnailRef = useRef(null);
 
   // 当 previewSrc 变化时重置状态
   useEffect(() => {
@@ -13,14 +21,44 @@ const PreviewImage = ({ previewSrc, remoteSrc, imageList }) => {
     setLoadFailed(false);
   }, [previewSrc]);
 
-  const handleError = () => {
+  const handleError = useCallback(() => {
     const fallback = remoteSrc || (imageList && imageList[0]);
     if (fallback && validSrc !== fallback) {
       setValidSrc(fallback);
     } else {
       setLoadFailed(true);
     }
-  };
+  }, [remoteSrc, imageList, validSrc]);
+
+  const handleMouseEnter = useCallback(() => {
+    if (thumbnailRef.current) {
+      const rect = thumbnailRef.current.getBoundingClientRect();
+      const popupWidth = 280; // 256px 图片 + padding
+      const popupHeight = 280;
+      
+      // 计算位置，确保不超出视口
+      let left = rect.right + 8;
+      let top = rect.top + rect.height / 2 - popupHeight / 2;
+      
+      // 右侧空间不足时显示在左侧
+      if (left + popupWidth > window.innerWidth) {
+        left = rect.left - popupWidth - 8;
+      }
+      
+      // 上下边界检查
+      if (top < 8) top = 8;
+      if (top + popupHeight > window.innerHeight - 8) {
+        top = window.innerHeight - popupHeight - 8;
+      }
+      
+      setPopupPosition({ top, left });
+      setShowPopup(true);
+    }
+  }, []);
+
+  const handleMouseLeave = useCallback(() => {
+    setShowPopup(false);
+  }, []);
 
   if (!previewSrc) {
     return <span className="text-gray-400 text-xs">无图</span>;
@@ -31,22 +69,46 @@ const PreviewImage = ({ previewSrc, remoteSrc, imageList }) => {
   }
 
   return (
-    <div className="group relative inline-block">
-      <img
-        src={validSrc}
-        alt="封面"
-        className="w-12 h-12 rounded object-cover border border-gray-200"
-        onError={handleError}
-      />
-      <div className="hidden group-hover:block absolute left-14 top-1/2 -translate-y-1/2 z-50 bg-white border border-gray-200 rounded shadow-lg p-2">
+    <>
+      <div 
+        ref={thumbnailRef}
+        className="relative inline-block cursor-pointer"
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
+      >
         <img
           src={validSrc}
-          alt="预览大图"
-          className="w-64 h-64 object-contain rounded"
+          alt="封面"
+          className="w-12 h-12 rounded object-cover border border-gray-200"
           onError={handleError}
         />
       </div>
-    </div>
+      {/* 使用 fixed 定位的弹出层，通过 Portal 避免被 overflow:hidden 裁剪 */}
+      {showPopup && (
+        <div 
+          className="fixed z-[9999] bg-white border border-gray-200 rounded-lg shadow-xl p-2"
+          style={{ 
+            top: popupPosition.top, 
+            left: popupPosition.left,
+            pointerEvents: 'none' // 防止鼠标移动到弹出层时触发 mouseLeave
+          }}
+        >
+          <img
+            src={validSrc}
+            alt="预览大图"
+            className="w-64 h-64 object-contain rounded"
+            onError={handleError}
+          />
+        </div>
+      )}
+      {/* 预加载大图：隐藏的 img 标签确保图片在悬浮前已缓存 */}
+      <img 
+        src={validSrc} 
+        alt="" 
+        style={{ display: 'none' }} 
+        onError={handleError}
+      />
+    </>
   );
 };
 
