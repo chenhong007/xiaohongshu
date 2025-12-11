@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { Sidebar } from './components/Sidebar';
 import { ContentArea } from './components/ContentArea';
@@ -9,6 +9,48 @@ function App() {
   const [searchTerm, setSearchTerm] = useState('');
   const [isSearchVisible, setIsSearchVisible] = useState(false);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
+  
+  // ========== 账号数据缓存（提升到 App 层级避免页面切换时丢失） ==========
+  const [accounts, setAccounts] = useState([]);
+  const [accountsLoading, setAccountsLoading] = useState(false);
+  const [accountsError, setAccountsError] = useState(null);
+  const accountsLoadedRef = useRef(false);  // 标记是否已加载过
+
+  // 获取账号列表
+  const fetchAccounts = useCallback(async (silent = false) => {
+    // 如果已有缓存数据，静默刷新（不显示 loading）
+    if (!silent && accounts.length === 0) {
+      setAccountsLoading(true);
+    }
+    setAccountsError(null);
+    
+    try {
+      const data = await accountApi.getAll();
+      setAccounts(Array.isArray(data) ? data : []);
+      accountsLoadedRef.current = true;
+    } catch (err) {
+      console.error('Failed to fetch accounts:', err);
+      if (!silent && accounts.length === 0) {
+        setAccountsError('获取账号列表失败');
+      }
+    } finally {
+      setAccountsLoading(false);
+    }
+  }, [accounts.length]);
+
+  // 初始加载
+  useEffect(() => {
+    if (!accountsLoadedRef.current) {
+      fetchAccounts();
+    }
+  }, []);
+
+  // refreshTrigger 变化时刷新（静默刷新）
+  useEffect(() => {
+    if (refreshTrigger > 0) {
+      fetchAccounts(true);
+    }
+  }, [refreshTrigger]);
 
   // 搜索用户
   const handleSearchUsers = useCallback(async (query) => {
@@ -86,6 +128,13 @@ function App() {
                   onAddClick={() => setIsSearchVisible(true)}
                   refreshTrigger={refreshTrigger}
                   onRefresh={triggerRefresh}
+                  accounts={accounts}
+                  setAccounts={setAccounts}
+                  loading={accountsLoading}
+                  setLoading={setAccountsLoading}
+                  error={accountsError}
+                  setError={setAccountsError}
+                  fetchAccounts={fetchAccounts}
                 />
               </>
             } 

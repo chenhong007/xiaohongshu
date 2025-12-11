@@ -2,11 +2,22 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { RefreshCw, CheckCircle, Circle, Trash2, Upload, Download, AlertCircle, Zap, Database, StopCircle } from 'lucide-react';
 import { accountApi, authApi, COOKIE_INVALID_EVENT } from '../services';
 
-export const ContentArea = ({ activeTab, searchTerm, onAddClick, refreshTrigger, onRefresh }) => {
-  const [accounts, setAccounts] = useState([]);
-  const [loading, setLoading] = useState(false);
+export const ContentArea = ({ 
+  activeTab, 
+  searchTerm, 
+  onAddClick, 
+  refreshTrigger, 
+  onRefresh,
+  // 从 App 层级传入的缓存状态
+  accounts,
+  setAccounts,
+  loading,
+  setLoading,
+  error,
+  setError,
+  fetchAccounts,
+}) => {
   const [selectedIds, setSelectedIds] = useState(new Set());
-  const [error, setError] = useState(null);
   
   // 记录上一次的账号状态，用于检测变化
   const prevAccountsRef = useRef([]);
@@ -58,22 +69,6 @@ export const ContentArea = ({ activeTab, searchTerm, onAddClick, refreshTrigger,
     prevAccountsRef.current = accounts;
   }, [accounts, emitCookieInvalidSafely]);
 
-  // 获取账号列表
-  const fetchAccounts = useCallback(async (silent = false) => {
-    if (!silent) setLoading(true);
-    setError(null);
-    
-    try {
-      const data = await accountApi.getAll();
-      setAccounts(Array.isArray(data) ? data : []);
-    } catch (err) {
-      console.error('Failed to fetch accounts:', err);
-      if (!silent) setError('获取账号列表失败');
-    } finally {
-      if (!silent) setLoading(false);
-    }
-  }, []);
-
   // 轮询更新处理中的账号状态
   useEffect(() => {
     const isProcessing = accounts.some(acc => acc.status === 'processing' || acc.status === 'pending');
@@ -82,11 +77,6 @@ export const ContentArea = ({ activeTab, searchTerm, onAddClick, refreshTrigger,
       return () => clearInterval(timer);
     }
   }, [accounts, fetchAccounts]);
-
-  // 初始加载和刷新
-  useEffect(() => {
-    fetchAccounts();
-  }, [refreshTrigger, fetchAccounts]);
 
   // 切换选择
   const toggleSelect = (id) => {

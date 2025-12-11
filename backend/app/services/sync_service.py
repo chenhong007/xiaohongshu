@@ -455,6 +455,8 @@ class SyncService:
                         # 需要获取详情(深度模式下的新笔记或缺失素材笔记)
                         success, msg, note_detail = xhs_apis.get_note_info(note_url, cookie_str)
                         
+                        detail_saved = False
+                        
                         if not success:
                             # 检查认证错误
                             if SyncService._handle_auth_error(msg):
@@ -466,6 +468,9 @@ class SyncService:
                                 db.session.commit()
                                 SyncService._mark_accounts_failed(remaining_ids, auth_error_msg)
                                 break
+                            else:
+                                # 非认证错误，记录日志
+                                logger.warning(f"Failed to get note detail for {note_id}: {msg}")
 
                         if success and note_detail:
                             try:
@@ -477,10 +482,22 @@ class SyncService:
                                     cleaned_data = handle_note_info(note_data, from_list=False)
                                     # 深度同步获取详情后，下载所有媒体资源
                                     SyncService._save_note(cleaned_data, download_media=True)
+                                    detail_saved = True
                                 else:
-                                    logger.info(f"Note {note_id} has no valid data")
+                                    logger.warning(f"Note {note_id} has no valid data in response")
                             except Exception as e:
-                                logger.info(f"Error parsing note {note_id}: {e}")
+                                logger.warning(f"Error parsing note {note_id}: {e}")
+                        
+                        # 【关键修复】如果详情获取失败，至少保存列表页的基本数据
+                        # 这样封面等信息能从列表页获取，不会完全为空
+                        if not detail_saved:
+                            try:
+                                logger.info(f"Saving note {note_id} with list data as fallback")
+                                cleaned_data = handle_note_info(simple_note, from_list=True)
+                                # 列表页数据，不下载完整媒体（因为没有详情），但封面可以获取
+                                SyncService._save_note(cleaned_data, download_media=False)
+                            except Exception as e:
+                                logger.warning(f"Error saving note {note_id} with list data: {e}")
                         
                         # 请求间隔,避免被封（仅在请求详情页时等待,加入随机抖动）
                         SyncService._sleep_with_jitter(sync_mode)

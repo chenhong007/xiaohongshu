@@ -391,27 +391,51 @@ def manual_cookie():
         
         logger.info(f"Cookie 验证成功: user_id={user_id}, nickname={nickname}, avatar={avatar[:50] if avatar else 'None'}...")
         
+        # 检查是否存在同一用户的Cookie（判断是更新还是新增）
+        existing_cookie = Cookie.query.filter_by(user_id=user_id, is_active=True).first() if user_id else None
+        
         # 将之前的 Cookie 设为非激活
         Cookie.query.update({'is_active': False})
         
-        # 保存新 Cookie（加密存储）
-        cookie = Cookie(
-            user_id=user_id,
-            nickname=nickname,
-            avatar=avatar,
-            is_active=True,
-            is_valid=True,
-            last_checked=datetime.utcnow(),
-            run_start_time=filled_at_dt
-        )
-        # 使用加密方法设置 Cookie
-        cookie.set_cookie_str(cookie_str)
+        if existing_cookie:
+            # 同一用户的Cookie更新：保留原有的运行时间统计
+            logger.info(f"检测到同一用户 {user_id} 的Cookie更新，保留原有运行时间统计")
+            
+            # 更新现有Cookie的内容
+            existing_cookie.set_cookie_str(cookie_str)
+            existing_cookie.nickname = nickname
+            existing_cookie.avatar = avatar
+            existing_cookie.is_active = True
+            existing_cookie.is_valid = True
+            existing_cookie.last_checked = datetime.utcnow()
+            # 保留原有的 run_start_time、total_run_seconds 等时间统计
+            # 如果之前已失效，重新设置开始时间为现在
+            if not existing_cookie.run_start_time:
+                existing_cookie.run_start_time = datetime.utcnow()
+                logger.info(f"Cookie 之前已失效，重新开始计时")
+            
+            cookie = existing_cookie
+        else:
+            # 新用户的Cookie：创建新记录，重新开始计时
+            logger.info(f"检测到新用户 {user_id} 的Cookie，重新开始计时")
+            
+            # 保存新 Cookie（加密存储）
+            cookie = Cookie(
+                user_id=user_id,
+                nickname=nickname,
+                avatar=avatar,
+                is_active=True,
+                is_valid=True,
+                last_checked=datetime.utcnow(),
+                run_start_time=filled_at_dt if filled_at_dt else datetime.utcnow(),
+                total_run_seconds=0,
+                last_valid_duration=0,
+            )
+            # 使用加密方法设置 Cookie
+            cookie.set_cookie_str(cookie_str)
+            
+            db.session.add(cookie)
         
-        # 启动运行计时器
-        if not cookie.run_start_time:
-            cookie.start_run_timer()
-        
-        db.session.add(cookie)
         db.session.commit()
 
         # 清理历史同步错误，避免旧错误反复触发 Cookie 失效提示
@@ -561,24 +585,52 @@ def manual_cookie_encrypted():
         data_to_use = res2_data if res2_data else res.get('data', {})
         user_id, nickname, avatar = extract_user_info(data_to_use)
         
+        logger.info(f"Cookie(加密) 验证成功: user_id={user_id}, nickname={nickname}")
+        
+        # 检查是否存在同一用户的Cookie（判断是更新还是新增）
+        existing_cookie = Cookie.query.filter_by(user_id=user_id, is_active=True).first() if user_id else None
+        
         # 将之前的 Cookie 设为非激活
         Cookie.query.update({'is_active': False})
         
-        # 保存新 Cookie
-        cookie = Cookie(
-            user_id=user_id,
-            nickname=nickname,
-            avatar=avatar,
-            is_active=True,
-            is_valid=True,
-            last_checked=datetime.utcnow(),
-            run_start_time=filled_at_dt
-        )
-        cookie.set_cookie_str(cookie_str)
-        if not cookie.run_start_time:
-            cookie.start_run_timer()
+        if existing_cookie:
+            # 同一用户的Cookie更新：保留原有的运行时间统计
+            logger.info(f"检测到同一用户 {user_id} 的Cookie更新，保留原有运行时间统计")
+            
+            # 更新现有Cookie的内容
+            existing_cookie.set_cookie_str(cookie_str)
+            existing_cookie.nickname = nickname
+            existing_cookie.avatar = avatar
+            existing_cookie.is_active = True
+            existing_cookie.is_valid = True
+            existing_cookie.last_checked = datetime.utcnow()
+            # 保留原有的 run_start_time、total_run_seconds 等时间统计
+            # 如果之前已失效，重新设置开始时间为现在
+            if not existing_cookie.run_start_time:
+                existing_cookie.run_start_time = datetime.utcnow()
+                logger.info(f"Cookie 之前已失效，重新开始计时")
+            
+            cookie = existing_cookie
+        else:
+            # 新用户的Cookie：创建新记录，重新开始计时
+            logger.info(f"检测到新用户 {user_id} 的Cookie，重新开始计时")
+            
+            # 保存新 Cookie
+            cookie = Cookie(
+                user_id=user_id,
+                nickname=nickname,
+                avatar=avatar,
+                is_active=True,
+                is_valid=True,
+                last_checked=datetime.utcnow(),
+                run_start_time=filled_at_dt if filled_at_dt else datetime.utcnow(),
+                total_run_seconds=0,
+                last_valid_duration=0,
+            )
+            cookie.set_cookie_str(cookie_str)
+            
+            db.session.add(cookie)
         
-        db.session.add(cookie)
         db.session.commit()
 
         # 清理历史同步错误，避免旧错误反复触发 Cookie 失效提示

@@ -11,16 +11,18 @@ const POLL_INTERVAL = 30000;
 // 运行时长更新间隔（毫秒）- 1秒
 const RUNTIME_UPDATE_INTERVAL = 1000;
 
-// 本地缓存 key
+// 本地缓存 key - 仅缓存用户基本信息用于快速展示，时间数据始终从服务端获取
 const CACHE_KEY = 'xhs_user_cache';
 
 /**
  * 保存用户状态到本地缓存
+ * 注意：只缓存用户基本信息，不缓存时间数据（时间数据从服务端实时获取）
  */
 const saveUserCache = (userData) => {
   try {
     sessionStorage.setItem(CACHE_KEY, JSON.stringify({
-      ...userData,
+      user: userData.user,
+      // 不再缓存 runInfo 和 currentRunSeconds，这些数据从服务端实时获取
       cachedAt: Date.now()
     }));
   } catch (e) {
@@ -30,16 +32,22 @@ const saveUserCache = (userData) => {
 
 /**
  * 从本地缓存读取用户状态
- * 缓存有效期：5分钟
+ * 仅用于快速展示用户头像和名称，避免页面闪烁
+ * 时间数据始终从服务端获取
  */
 const loadUserCache = () => {
   try {
     const cached = sessionStorage.getItem(CACHE_KEY);
     if (cached) {
       const data = JSON.parse(cached);
-      // 缓存有效期 5 分钟
+      // 缓存有效期 5 分钟（仅用于快速展示用户基本信息）
       if (Date.now() - data.cachedAt < 5 * 60 * 1000) {
-        return data;
+        return {
+          user: data.user,
+          // 不返回缓存的时间数据，强制从服务端获取
+          runInfo: null,
+          currentRunSeconds: 0
+        };
       }
     }
   } catch (e) {
@@ -132,18 +140,14 @@ export const UserLogin = () => {
         setError(null);
         setInvalidInfo(null);
         
-        // 设置运行时长信息
+        // 设置运行时长信息 - 使用服务端返回的实时数据
         const newRunInfo = data.run_info || null;
         const newRunSeconds = data.run_info?.current_run_seconds || 0;
         setRunInfo(newRunInfo);
         setCurrentRunSeconds(newRunSeconds);
         
-        // 保存到缓存
-        saveUserCache({
-          user: newUser,
-          runInfo: newRunInfo,
-          currentRunSeconds: newRunSeconds
-        });
+        // 保存到缓存（只缓存用户基本信息，不缓存时间数据）
+        saveUserCache({ user: newUser });
       } else {
         setUser(null);
         clearUserCache(); // 清除缓存
@@ -254,19 +258,19 @@ export const UserLogin = () => {
         };
         setUser(newUser);
         
-        // 设置运行时长信息
+        // 设置运行时长信息 - 使用服务端返回的数据（包含正确的起始时间）
         const newRunInfo = result.run_info || null;
         if (newRunInfo) {
           setRunInfo(newRunInfo);
+          // 使用服务端返回的当前运行秒数，而不是固定为0
+          setCurrentRunSeconds(newRunInfo.current_run_seconds || 0);
+        } else {
+          setRunInfo(null);
           setCurrentRunSeconds(0);
         }
         
-        // 保存到缓存
-        saveUserCache({
-          user: newUser,
-          runInfo: newRunInfo,
-          currentRunSeconds: 0
-        });
+        // 保存到缓存（只缓存用户信息）
+        saveUserCache({ user: newUser });
         
         setShowManualInput(false);
         setCookieInput('');
@@ -285,18 +289,19 @@ export const UserLogin = () => {
           };
           setUser(newUser);
           
+          // 设置运行时长信息 - 使用服务端返回的数据（包含正确的起始时间）
           const newRunInfo = result.run_info || null;
           if (newRunInfo) {
             setRunInfo(newRunInfo);
+            // 使用服务端返回的当前运行秒数
+            setCurrentRunSeconds(newRunInfo.current_run_seconds || 0);
+          } else {
+            setRunInfo(null);
             setCurrentRunSeconds(0);
           }
           
-          // 保存到缓存
-          saveUserCache({
-            user: newUser,
-            runInfo: newRunInfo,
-            currentRunSeconds: 0
-          });
+          // 保存到缓存（只缓存用户信息）
+          saveUserCache({ user: newUser });
           
           setShowManualInput(false);
           setCookieInput('');
