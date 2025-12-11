@@ -59,12 +59,12 @@ class Config:
     SYNC_REQUEST_DELAY = float(os.environ.get('SYNC_REQUEST_DELAY', '1.0'))
     # 深度同步随机延迟区间（秒）
     # 【重要】小红书反爬策略很严格，延迟必须足够长！
-    # 建议至少 3-8 秒，否则会被限流导致获取详情全部失败
-    DEEP_SYNC_DELAY_MIN = float(os.environ.get('DEEP_SYNC_DELAY_MIN', '4.0'))
-    DEEP_SYNC_DELAY_MAX = float(os.environ.get('DEEP_SYNC_DELAY_MAX', '8.0'))
+    # 参考 fix_deep_sync.py 策略: 5-15秒基础延迟 + 20%概率额外暂停(最长30秒)
+    DEEP_SYNC_DELAY_MIN = float(os.environ.get('DEEP_SYNC_DELAY_MIN', '5.0'))
+    DEEP_SYNC_DELAY_MAX = float(os.environ.get('DEEP_SYNC_DELAY_MAX', '15.0'))
     # 额外随机长延迟的概率与上限（防爬虫抖动）
     DEEP_SYNC_EXTRA_PAUSE_CHANCE = float(os.environ.get('DEEP_SYNC_EXTRA_PAUSE_CHANCE', '0.20'))
-    DEEP_SYNC_EXTRA_PAUSE_MAX = float(os.environ.get('DEEP_SYNC_EXTRA_PAUSE_MAX', '15.0'))
+    DEEP_SYNC_EXTRA_PAUSE_MAX = float(os.environ.get('DEEP_SYNC_EXTRA_PAUSE_MAX', '30.0'))
     # 最大并发同步数
     MAX_CONCURRENT_SYNCS = int(os.environ.get('MAX_CONCURRENT_SYNCS', '3'))
     

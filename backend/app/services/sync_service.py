@@ -194,7 +194,7 @@ class SyncService:
         
         【重要】深度同步需要请求详情页API，小红书对此有严格的频率限制。
         太快会导致返回 "访问频次异常" 或 "当前笔记暂时无法浏览" 错误。
-        建议间隔至少2-4秒。
+        策略参考 fix_deep_sync.py: 5-15秒基础延迟 + 20%概率额外暂停5-30秒。
         """
         if sync_mode != 'deep':
             return
@@ -202,20 +202,20 @@ class SyncService:
         cfg = current_app.config if current_app else {}
         try:
             # 【重要】小红书反爬很严格，默认延迟必须足够长！
-            # 太快会导致全部被限流，详情获取全部失败
-            min_delay = float(cfg.get('DEEP_SYNC_DELAY_MIN', 4.0))
-            max_delay = float(cfg.get('DEEP_SYNC_DELAY_MAX', 8.0))
+            # 参考 fix_deep_sync.py 策略：5-15秒 + 20%概率额外5-30秒
+            min_delay = float(cfg.get('DEEP_SYNC_DELAY_MIN', 5.0))
+            max_delay = float(cfg.get('DEEP_SYNC_DELAY_MAX', 15.0))
             extra_prob = float(cfg.get('DEEP_SYNC_EXTRA_PAUSE_CHANCE', 0.20))
-            extra_max = float(cfg.get('DEEP_SYNC_EXTRA_PAUSE_MAX', 15.0))
+            extra_max = float(cfg.get('DEEP_SYNC_EXTRA_PAUSE_MAX', 30.0))
         except Exception:
-            min_delay, max_delay, extra_prob, extra_max = 4.0, 8.0, 0.20, 15.0
+            min_delay, max_delay, extra_prob, extra_max = 5.0, 15.0, 0.20, 30.0
 
         min_delay = max(0.5, min_delay)
         max_delay = max(min_delay, max_delay)
 
         delay = random.uniform(min_delay, max_delay)
         if random.random() < extra_prob:
-            delay += random.uniform(1.0, extra_max)
+            delay += random.uniform(5.0, extra_max)
 
         time.sleep(delay)
 
