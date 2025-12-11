@@ -528,6 +528,8 @@ export const DownloadPage = () => {
                   />
                 </th>
                 <th className="p-4">类型</th>
+                <th className="p-4">预览</th>
+                <th className="p-4">远程URL</th>
                 <th 
                   className="p-4 cursor-pointer hover:bg-gray-100"
                   onClick={() => handleSort('upload_time')}
@@ -566,7 +568,7 @@ export const DownloadPage = () => {
             <tbody>
               {notes.length === 0 ? (
                 <tr>
-                  <td colSpan="9" className="p-0">
+                  <td colSpan="12" className="p-0">
                     <div className="flex flex-col items-center justify-center text-gray-400 py-16">
                       <Coffee className="w-12 h-12 mb-4 text-gray-300" />
                       <p>
@@ -586,7 +588,10 @@ export const DownloadPage = () => {
                   </td>
                 </tr>
               ) : (
-                notes.map((note) => (
+                notes.map((note) => {
+                  const previewSrc = note.cover_local || note.cover_remote || (note.image_list && note.image_list[0]);
+                  const remoteSrc = note.cover_remote || (note.image_list && note.image_list[0]) || '';
+                  return (
                   <tr key={note.note_id} className="border-b hover:bg-gray-50">
                     <td className="p-4">
                       <input 
@@ -605,6 +610,41 @@ export const DownloadPage = () => {
                         <span className="inline-flex items-center gap-1 text-green-600">
                           <Image className="w-4 h-4" /> 图集
                         </span>
+                      )}
+                    </td>
+                    <td className="p-4">
+                      {previewSrc ? (
+                        <div className="group relative inline-block">
+                          <img
+                            src={previewSrc}
+                            alt="封面"
+                            className="w-12 h-12 rounded object-cover border border-gray-200"
+                          />
+                          <div className="hidden group-hover:block absolute left-14 top-1/2 -translate-y-1/2 z-50 bg-white border border-gray-200 rounded shadow-lg p-2">
+                            <img
+                              src={previewSrc}
+                              alt="预览大图"
+                              className="w-64 h-64 object-contain rounded"
+                            />
+                          </div>
+                        </div>
+                      ) : (
+                        <span className="text-gray-400 text-xs">无图</span>
+                      )}
+                    </td>
+                    <td className="p-4">
+                      {remoteSrc ? (
+                        <a 
+                          href={remoteSrc} 
+                          target="_blank" 
+                          rel="noopener noreferrer"
+                          className="text-blue-500 hover:text-blue-700 break-all text-xs"
+                          title={remoteSrc}
+                        >
+                          远程链接
+                        </a>
+                      ) : (
+                        <span className="text-gray-400 text-xs">-</span>
                       )}
                     </td>
                     <td className="p-4 text-gray-500">{note.upload_time || '-'}</td>
@@ -637,7 +677,8 @@ export const DownloadPage = () => {
                       </a>
                     </td>
                   </tr>
-                ))
+                  );
+                })
               )}
             </tbody>
           </table>

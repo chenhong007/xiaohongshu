@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2025-12-11
+
+### Added
+- 笔记封面缓存与预览：新增 `cover_remote/cover_local` 字段，封面缓存至 `datas/media_datas`，通过 `/api/media/<filename>` 提供访问，下载页支持缩略图预览与远程链接跳转
+- 深度同步防爬延迟配置：新增 `DEEP_SYNC_DELAY_MIN/DEEP_SYNC_DELAY_MAX/DEEP_SYNC_EXTRA_PAUSE_CHANCE/DEEP_SYNC_EXTRA_PAUSE_MAX` 环境变量控制随机延时
+- 应用启动自动创建媒体与导出目录，减少手工准备
+
+### Changed
+- 深度同步请求新增随机抖动与偶发长暂停；用户笔记列表请求增加随机延迟，降低封禁风险
+- Cookie 认证失败时会批量标记剩余账号失败，避免前端卡在“准备中”
+
+### Fixed
+- Cookie 运行时长结算在先置 `is_valid=False` 的场景下仍会正确完成
+
 ## [1.2.0] - 2025-12-10
 
 ### Added

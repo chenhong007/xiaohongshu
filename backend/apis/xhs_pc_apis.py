@@ -3,6 +3,7 @@ import json
 import re
 import urllib
 import time
+import random
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -302,9 +303,12 @@ class XHS_Apis():
             xsec_token = kvDist.get('xsec_token', "")
             xsec_source = kvDist.get('xsec_source', "pc_search")
             while True:
-                # 非首页请求增加间隔，防止请求过快被限制
+                # 非首页请求增加随机间隔，防止请求过快被限制
                 if page_count > 0:
-                    time.sleep(1)
+                    delay = random.uniform(0.8, 1.6)
+                    if random.random() < 0.1:
+                        delay += random.uniform(0.5, 2.5)
+                    time.sleep(delay)
                 page_count += 1
                 
                 success, msg, res_json = self.get_user_note_info(user_id, cursor, cookies_str, xsec_token, xsec_source, proxies)

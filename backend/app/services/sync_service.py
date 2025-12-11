@@ -2,14 +2,19 @@
 同步服务 - 处理笔记数据同步
 """
 import json
+import os
 import time
+import random
 import threading
 from datetime import datetime
+from urllib.parse import urlparse
 from flask import current_app
+import requests
 
 from ..extensions import db
 from ..models import Account, Note, Cookie
 from ..utils.logger import get_logger, log_sync_event
+from ..config import Config
 
 # 获取日志器
 logger = get_logger('sync')
@@ -19,6 +24,25 @@ class SyncService:
     """同步服务类"""
     
     _stop_event = threading.Event()
+    
+    @staticmethod
+    def _mark_accounts_failed(account_ids, message):
+        """将指定账号标记为失败，避免前端一直显示'准备中'"""
+        if not account_ids:
+            return
+        try:
+            Account.query.filter(Account.id.in_(list(account_ids))).update(
+                {
+                    'status': 'failed',
+                    'error_message': message,
+                    'progress': 0
+                },
+                synchronize_session=False
+            )
+            db.session.commit()
+        except Exception as e:
+            logger.error(f"批量标记账号失败: {e}")
+            db.session.rollback()
     
     @staticmethod
     def stop_sync():
@@ -36,6 +60,7 @@ class SyncService:
                 # 重新查询当前激活的 cookie
                 cookie = Cookie.query.filter_by(is_active=True).first()
                 if cookie:
+                    cookie.stop_run_timer()
                     cookie.is_valid = False
                     cookie.last_checked = datetime.utcnow()
                     db.session.commit()
@@ -44,6 +69,30 @@ class SyncService:
             except Exception as e:
                 logger.error(f"标记Cookie失效时出错: {e}")
         return False
+
+    @staticmethod
+    def _sleep_with_jitter(sync_mode):
+        """深度同步时增加随机间隔，降低爬虫特征"""
+        if sync_mode != 'deep':
+            return
+
+        cfg = current_app.config if current_app else {}
+        try:
+            min_delay = float(cfg.get('DEEP_SYNC_DELAY_MIN', 0.8))
+            max_delay = float(cfg.get('DEEP_SYNC_DELAY_MAX', 1.8))
+            extra_prob = float(cfg.get('DEEP_SYNC_EXTRA_PAUSE_CHANCE', 0.12))
+            extra_max = float(cfg.get('DEEP_SYNC_EXTRA_PAUSE_MAX', 3.0))
+        except Exception:
+            min_delay, max_delay, extra_prob, extra_max = 0.8, 1.8, 0.12, 3.0
+
+        min_delay = max(0.1, min_delay)
+        max_delay = max(min_delay, max_delay)
+
+        delay = random.uniform(min_delay, max_delay)
+        if random.random() < extra_prob:
+            delay += random.uniform(0.5, extra_max)
+
+        time.sleep(delay)
 
     @staticmethod
     def get_cookie_str():
@@ -83,6 +132,7 @@ class SyncService:
         """同步账号的笔记数据"""
         logger.info(f"开始同步账号: {account_ids}, 模式: {sync_mode}")
         
+        remaining_ids = set(account_ids)
         cookie_str = SyncService.get_cookie_str()
         if not cookie_str:
             logger.error("未找到有效的 Cookie")
@@ -117,6 +167,10 @@ class SyncService:
                 account = Account.query.get(acc_id)
                 if not account:
                     continue
+                
+                # 当前账号即将处理，移出剩余集合
+                remaining_ids.discard(acc_id)
+                auth_error_msg = None
                 
                 # 更新状态为处理中,清除之前的错误信息
                 account.status = 'processing'
@@ -192,8 +246,10 @@ class SyncService:
                     # 检查是否为认证错误
                     if SyncService._handle_auth_error(msg):
                         error_msg = f"Cookie已失效,请重新登录。原始错误: {msg}"
+                        auth_error_msg = error_msg
                         # 标记停止,不再尝试后续账号
                         SyncService.stop_sync()
+                        SyncService._mark_accounts_failed(remaining_ids, error_msg)
                     else:
                         error_msg = f"获取笔记列表失败: {msg}"
 
@@ -203,6 +259,8 @@ class SyncService:
                     account.status = 'failed'
                     account.error_message = error_msg
                     db.session.commit()
+                    if auth_error_msg:
+                        break
                     continue
                 
                 # 【关键修复】如果API成功但返回空列表,标记为失败而不是继续
@@ -224,7 +282,9 @@ class SyncService:
                     success_info, msg_info, user_info_res = xhs_apis.get_user_info(account.user_id, cookie_str)
                     
                     if not success_info and SyncService._handle_auth_error(msg_info):
-                         SyncService.stop_sync()
+                        auth_error_msg = f"Cookie已失效,同步终止。错误: {msg_info}"
+                        SyncService.stop_sync()
+                        SyncService._mark_accounts_failed(remaining_ids, auth_error_msg)
                     
                     if success_info and user_info_res and user_info_res.get('data'):
                         user_data = user_info_res['data']
@@ -327,13 +387,16 @@ class SyncService:
                         success, msg, note_detail = xhs_apis.get_note_info(note_url, cookie_str)
                         
                         if not success:
-                             # 检查认证错误
-                             if SyncService._handle_auth_error(msg):
-                                 logger.info(f"Auth error during note detail fetch: {msg}")
-                                 SyncService.stop_sync()
-                                 account.status = 'failed'
-                                 account.error_message = f"Cookie已失效,同步终止。错误: {msg}"
-                                 break
+                            # 检查认证错误
+                            if SyncService._handle_auth_error(msg):
+                                logger.info(f"Auth error during note detail fetch: {msg}")
+                                auth_error_msg = f"Cookie已失效,同步终止。错误: {msg}"
+                                SyncService.stop_sync()
+                                account.status = 'failed'
+                                account.error_message = auth_error_msg
+                                db.session.commit()
+                                SyncService._mark_accounts_failed(remaining_ids, auth_error_msg)
+                                break
 
                         if success and note_detail:
                             try:
@@ -349,8 +412,8 @@ class SyncService:
                             except Exception as e:
                                 logger.info(f"Error parsing note {note_id}: {e}")
                         
-                        # 请求间隔,避免被封（仅在请求详情页时等待）
-                        time.sleep(1)
+                        # 请求间隔,避免被封（仅在请求详情页时等待,加入随机抖动）
+                        SyncService._sleep_with_jitter(sync_mode)
                     
                     # 更新进度
                     # 只有在确实处理了笔记时才更新loaded_msgs?
@@ -366,6 +429,9 @@ class SyncService:
                         pass
                 
                 # 完成同步
+                if auth_error_msg:
+                    # 认证错误时当前账号已标记失败，其余账号也已处理
+                    break
                 if not SyncService._stop_event.is_set():
                     account.status = 'completed'
                     # 确保进度为100%
@@ -410,6 +476,13 @@ class SyncService:
             if not note_id:
                 logger.info(f"Skipping note save: note_id is empty. Data: {note_data.get('title', 'unknown')}")
                 return
+
+            # 计算封面（远程 + 本地缓存）
+            cover_remote = note_data.get('cover_remote') or note_data.get('video_cover')
+            if not cover_remote:
+                imgs = note_data.get('image_list') or []
+                cover_remote = imgs[0] if len(imgs) > 0 else None
+            cover_local = SyncService._download_cover(cover_remote, note_id) if cover_remote else None
             
             # 使用merge实现upsert语义,避免唯一约束冲突
             note = Note.query.filter_by(note_id=note_id).first()
@@ -449,6 +522,10 @@ class SyncService:
                     note.tags = json.dumps(note_data['tags'])
                 if note_data['ip_location']:
                     note.ip_location = note_data['ip_location']
+                if cover_remote:
+                    note.cover_remote = cover_remote
+                if cover_local:
+                    note.cover_local = cover_local
                     
                 note.last_updated = datetime.utcnow()
             else:
@@ -470,6 +547,8 @@ class SyncService:
                     image_list=json.dumps(note_data['image_list']) if note_data['image_list'] else '[]',
                     tags=json.dumps(note_data['tags']) if note_data['tags'] else '[]',
                     ip_location=note_data['ip_location'] or '',
+                    cover_remote=cover_remote or '',
+                    cover_local=cover_local or '',
                 )
                 db.session.add(note)
             
@@ -480,3 +559,33 @@ class SyncService:
             logger.info(f"Error saving note {note_data.get('note_id')}: {e}")
             # 重新抛出异常让上层处理
             raise
+
+    @staticmethod
+    def _download_cover(remote_url, note_id):
+        """下载封面到本地并返回可访问的API路径"""
+        if not remote_url:
+            return None
+        try:
+            Config.init_paths()
+            parsed = urlparse(remote_url)
+            ext = os.path.splitext(parsed.path)[1]
+            if not ext or len(ext) > 5:
+                ext = '.jpg'
+            filename = f"{note_id}_cover{ext}"
+            filepath = os.path.join(Config.MEDIA_PATH, filename)
+            # 已存在则直接复用
+            if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
+                return f"/api/media/{filename}"
+            
+            resp = requests.get(remote_url, stream=True, timeout=10)
+            if resp.status_code == 200:
+                with open(filepath, 'wb') as f:
+                    for chunk in resp.iter_content(8192):
+                        if chunk:
+                            f.write(chunk)
+                return f"/api/media/{filename}"
+            else:
+                logger.info(f"Download cover failed ({resp.status_code}) for {note_id}")
+        except Exception as e:
+            logger.info(f"Download cover error for {note_id}: {e}")
+        return None

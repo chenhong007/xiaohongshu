@@ -115,7 +115,8 @@ class Cookie(db.Model):
         停止运行计时器并计算运行时长
         Cookie 失效时调用
         """
-        if self.run_start_time and self.is_valid:
+        # 只要存在开始时间就结算一次，避免先标记 is_valid=False 导致遗漏
+        if self.run_start_time:
             # 计算本次运行时长
             now = datetime.utcnow()
             duration = int((now - self.run_start_time).total_seconds())

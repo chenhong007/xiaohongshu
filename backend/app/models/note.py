@@ -32,6 +32,9 @@ class Note(db.Model):
     image_list = db.Column(db.Text)  # JSON 格式存储图片列表
     tags = db.Column(db.Text)  # JSON 格式存储标签
     ip_location = db.Column(db.String(64))
+    # 预览封面：cover_remote 为远程首图/视频封面，cover_local 为本地缓存地址
+    cover_remote = db.Column(db.String(512))
+    cover_local = db.Column(db.String(512))
     
     # 元数据
     last_updated = db.Column(db.DateTime, default=datetime.utcnow)
@@ -73,6 +76,8 @@ class Note(db.Model):
             'image_list': self.get_image_list(),
             'tags': self.get_tags(),
             'ip_location': self.ip_location,
+            'cover_remote': self.cover_remote,
+            'cover_local': self.cover_local,
             'last_updated': self.last_updated.isoformat() if self.last_updated else None,
         }
     

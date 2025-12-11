@@ -57,6 +57,12 @@ class Config:
     # ==================== 同步配置 ====================
     # 同步请求间隔（秒）
     SYNC_REQUEST_DELAY = float(os.environ.get('SYNC_REQUEST_DELAY', '1.0'))
+    # 深度同步随机延迟区间（秒）
+    DEEP_SYNC_DELAY_MIN = float(os.environ.get('DEEP_SYNC_DELAY_MIN', '0.8'))
+    DEEP_SYNC_DELAY_MAX = float(os.environ.get('DEEP_SYNC_DELAY_MAX', '1.8'))
+    # 额外随机长延迟的概率与上限（防爬虫抖动）
+    DEEP_SYNC_EXTRA_PAUSE_CHANCE = float(os.environ.get('DEEP_SYNC_EXTRA_PAUSE_CHANCE', '0.12'))
+    DEEP_SYNC_EXTRA_PAUSE_MAX = float(os.environ.get('DEEP_SYNC_EXTRA_PAUSE_MAX', '3.0'))
     # 最大并发同步数
     MAX_CONCURRENT_SYNCS = int(os.environ.get('MAX_CONCURRENT_SYNCS', '3'))
     

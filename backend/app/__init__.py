@@ -58,6 +58,23 @@ def migrate_database(db_path):
                     logger.info(f"添加列 accounts.{column_name}")
                 except sqlite3.OperationalError:
                     pass
+
+        # 检查 notes 表，补充本地/远程封面字段
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='notes'")
+        if cursor.fetchone():
+            cursor.execute("PRAGMA table_info(notes)")
+            notes_columns = [row[1] for row in cursor.fetchall()]
+            note_columns_to_add = {
+                'cover_remote': 'VARCHAR(512)',
+                'cover_local': 'VARCHAR(512)',
+            }
+            for column_name, column_type in note_columns_to_add.items():
+                if column_name not in notes_columns:
+                    try:
+                        cursor.execute(f"ALTER TABLE notes ADD COLUMN {column_name} {column_type}")
+                        logger.info(f"添加列 notes.{column_name}")
+                    except sqlite3.OperationalError:
+                        pass
         
         # 检查 cookies 表
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='cookies'")
@@ -91,6 +108,8 @@ def create_app(config_class=None):
     
     app = Flask(__name__)
     app.config.from_object(config_class)
+    # 确保数据目录存在（媒体/导出等）
+    Config.init_paths()
     
     # 初始化日志
     setup_logger(

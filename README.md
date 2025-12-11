@@ -7,6 +7,7 @@
 - **博主管理**: 添加、删除、批量导入/导出博主账号
 - **笔记采集**: 自动采集博主的所有笔记数据
 - **笔记下载**: 支持筛选、搜索、排序和导出笔记
+- **封面缓存与预览**: 自动缓存笔记封面，下载页支持缩略图预览与远程链接跳转
 - **Cookie 管理**: 支持手动添加小红书 Cookie，加密存储和传输
 - **运行时长统计**: 记录 Cookie 有效运行时长，失效后显示历史记录
 - **实时进度**: 采集任务实时进度显示
@@ -39,6 +40,8 @@ xiaohongshu/
 │   ├── xhs_utils/              # 工具函数
 │   ├── static/                 # 静态资源 (JS 签名等)
 │   ├── datas/                  # 数据存储目录
+│   │   ├── media_datas/        # 笔记封面/图片缓存
+│   │   └── excel_datas/        # 导出文件目录
 │   ├── run.py                  # 后端入口文件
 │   ├── migrate_db.py           # 数据库迁移工具
 │   ├── requirements.txt        # Python 依赖
@@ -202,6 +205,11 @@ npm run build
 | POST | `/api/notes/export` | 导出笔记数据 |
 | GET | `/api/notes/stats` | 获取统计信息 |
 
+### 媒体访问
+| 方法 | 路径 | 说明 |
+|-----|------|-----|
+| GET | `/api/media/:filename` | 读取本地缓存的封面/图片，用于下载页预览 |
+
 ### 认证相关
 | 方法 | 路径 | 说明 |
 |-----|------|-----|
@@ -233,7 +241,14 @@ SECRET_KEY=your-secret-key
 # Cookie 加密密钥 (可选，建议在生产环境设置)
 # 生成方式: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 COOKIE_ENCRYPTION_KEY=your-fernet-key
+
+# 深度同步防爬延迟配置(可选，单位秒)
+DEEP_SYNC_DELAY_MIN=0.8
+DEEP_SYNC_DELAY_MAX=1.8
+DEEP_SYNC_EXTRA_PAUSE_CHANCE=0.12
+DEEP_SYNC_EXTRA_PAUSE_MAX=3.0
 ```
+> 后端启动时会自动创建 `datas/media_datas`（封面缓存）与 `datas/excel_datas`（导出文件）目录。
 
 ### Cookie 安全说明
 
@@ -274,6 +289,7 @@ COOKIE_ENCRYPTION_KEY=your-fernet-key
 2. 使用筛选条件筛选笔记
 3. 勾选要导出的笔记
 4. 点击「导出」按钮下载 JSON 文件
+> 下载列表支持封面缩略图预览（悬停放大），并提供远程图片/视频封面链接便于校验。
 
 ## 🤝 贡献
 

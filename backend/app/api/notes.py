@@ -1,13 +1,20 @@
 """
 笔记管理 API
 """
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, send_from_directory
 from sqlalchemy import or_
 
 from ..extensions import db
 from ..models import Note, Account
+from ..config import Config
 
 notes_bp = Blueprint('notes', __name__)
+
+
+@notes_bp.route('/media/<path:filename>', methods=['GET'])
+def get_note_media(filename):
+    """提供本地缓存的笔记封面/图片预览"""
+    return send_from_directory(Config.MEDIA_PATH, filename)
 
 
 @notes_bp.route('/notes', methods=['GET'])
