@@ -332,13 +332,14 @@ class SyncService:
         cfg = current_app.config if current_app else {}
         try:
             # 【重要】小红书反爬很严格，默认延迟必须足够长！
-            # 参考 fix_deep_sync.py 策略：5-15秒 + 20%概率额外5-30秒
-            min_delay = float(cfg.get('DEEP_SYNC_DELAY_MIN', 5.0))
-            max_delay = float(cfg.get('DEEP_SYNC_DELAY_MAX', 15.0))
-            extra_prob = float(cfg.get('DEEP_SYNC_EXTRA_PAUSE_CHANCE', 0.20))
-            extra_max = float(cfg.get('DEEP_SYNC_EXTRA_PAUSE_MAX', 30.0))
+            # 2024-12 更新：由于限流问题严重，将延迟从 5-15秒 增加到 30-60秒
+            # 同时增加额外暂停概率和时长
+            min_delay = float(cfg.get('DEEP_SYNC_DELAY_MIN', 30.0))
+            max_delay = float(cfg.get('DEEP_SYNC_DELAY_MAX', 60.0))
+            extra_prob = float(cfg.get('DEEP_SYNC_EXTRA_PAUSE_CHANCE', 0.30))
+            extra_max = float(cfg.get('DEEP_SYNC_EXTRA_PAUSE_MAX', 60.0))
         except Exception:
-            min_delay, max_delay, extra_prob, extra_max = 5.0, 15.0, 0.20, 30.0
+            min_delay, max_delay, extra_prob, extra_max = 30.0, 60.0, 0.30, 60.0
 
         min_delay = max(0.5, min_delay)
         max_delay = max(min_delay, max_delay)
@@ -735,8 +736,8 @@ class SyncService:
                                         message=str(msg),
                                         extra={'retry': retry_attempt + 1, 'rate_limit_count': SyncService._rate_limit_counter}
                                     )
-                                # 【关键】限流后等待更长时间再重试
-                                wait_time = random.uniform(15, 30) + SyncService._rate_limit_counter * 5
+                                # 【关键】限流后等待更长时间再重试（2024-12 更新：增加等待时间）
+                                wait_time = random.uniform(60, 120) + SyncService._rate_limit_counter * 15
                                 logger.info(f"[限流重试] 等待 {wait_time:.1f}s 后重试")
                                 time.sleep(wait_time)
                                 continue  # 重试
@@ -879,9 +880,9 @@ class SyncService:
                         
                         # 如果因为限流导致3次都失败，增加额外等待
                         if rate_limited and not detail_saved:
-                            # 【关键修复】限流后等待更长时间（30-60秒 + 动态退避）
-                            base_wait = random.uniform(30, 60)
-                            dynamic_wait = min(SyncService._rate_limit_counter * 10, 60)
+                            # 【关键修复】限流后等待更长时间（2024-12 更新：120-180秒 + 动态退避）
+                            base_wait = random.uniform(120, 180)
+                            dynamic_wait = min(SyncService._rate_limit_counter * 30, 180)
                             total_wait = base_wait + dynamic_wait
                             logger.warning(f"[限流失败] 笔记 {note_id} 连续限流，等待 {total_wait:.1f}s 后继续 (计数: {SyncService._rate_limit_counter})")
                             time.sleep(total_wait)
