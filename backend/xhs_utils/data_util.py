@@ -190,6 +190,14 @@ def handle_note_info(data, from_list=False):
         if not best_url:
             best_url = image.get('url_default') or image.get('url')
         if best_url:
+            # 【新增】转换为无水印高清图片URL
+            try:
+                from apis.xhs_pc_apis import XHS_Apis
+                success_nw, _, no_water_url = XHS_Apis.get_note_no_water_img(best_url)
+                if success_nw and no_water_url:
+                    best_url = no_water_url
+            except Exception as e:
+                pass  # 转换失败则使用原URL
             image_list.append(best_url)
     if note_type == '视频':
         video_cover = image_list[0]

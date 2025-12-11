@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Search, RefreshCw, ChevronDown, Coffee, Download as DownloadIcon, Play, Image, Video, ExternalLink, Trash2, X, Check, Calendar, Heart, Star, MessageCircle, RotateCcw, Share2 } from 'lucide-react';
+import { Search, RefreshCw, ChevronDown, Coffee, Download as DownloadIcon, Play, Image, Video, ExternalLink, Trash2, X, Check, Calendar, Heart, Star, MessageCircle, RotateCcw, Share2, Copy, CheckCircle } from 'lucide-react';
 import { noteApi, accountApi } from '../services';
 
 export const DownloadPage = () => {
@@ -38,6 +38,10 @@ export const DownloadPage = () => {
   
   // 选中状态
   const [selectedNoteIds, setSelectedNoteIds] = useState(new Set());
+  
+  // 复制状态
+  const [copiedNoteId, setCopiedNoteId] = useState(null);
+  const [copiedAll, setCopiedAll] = useState(false);
 
   // 获取账号列表（用于筛选下拉框）
   useEffect(() => {
@@ -210,12 +214,72 @@ export const DownloadPage = () => {
     setSelectedNoteIds(newSelected);
   };
 
+  // 复制单行内容
+  const copyContent = async (noteId, content) => {
+    try {
+      await navigator.clipboard.writeText(content || '');
+      setCopiedNoteId(noteId);
+      setTimeout(() => setCopiedNoteId(null), 2000);
+    } catch (err) {
+      console.error('Copy failed:', err);
+    }
+  };
+
+  // 复制全部内容详情
+  const copyAllContents = async () => {
+    try {
+      const allContents = notes
+        .map(note => note.desc || '')
+        .filter(desc => desc.trim())
+        .join('\n\n---\n\n');
+      await navigator.clipboard.writeText(allContents);
+      setCopiedAll(true);
+      setTimeout(() => setCopiedAll(false), 2000);
+    } catch (err) {
+      console.error('Copy all failed:', err);
+    }
+  };
+
+  // 构建筛选条件参数
+  const buildFilterParams = () => {
+    const params = {
+      note_type: noteType,
+    };
+    
+    // 时间范围处理
+    if (timeRange === 'custom') {
+      if (customStartDate) params.start_date = customStartDate;
+      if (customEndDate) params.end_date = customEndDate;
+    } else if (timeRange !== 'all') {
+      params.time_range = timeRange;
+    }
+    
+    if (selectedUserIds.length > 0) {
+      params.user_ids = selectedUserIds.join(',');
+    }
+    
+    if (keyword.trim()) {
+      params.keyword = keyword.trim();
+      params.match_mode = matchMode;
+    }
+    
+    // 数值过滤参数（最小值）
+    if (likedCountMin !== '') params.liked_count_min = parseInt(likedCountMin);
+    if (collectedCountMin !== '') params.collected_count_min = parseInt(collectedCountMin);
+    if (commentCountMin !== '') params.comment_count_min = parseInt(commentCountMin);
+    if (shareCountMin !== '') params.share_count_min = parseInt(shareCountMin);
+    
+    return params;
+  };
+
   // 导出笔记数据
   const handleExport = async (format = 'json') => {
     const noteIds = selectedNoteIds.size > 0 ? Array.from(selectedNoteIds) : [];
     
     try {
-      const result = await noteApi.export(noteIds, format);
+      // 如果没有选中特定笔记，则传递当前筛选条件
+      const filterParams = noteIds.length === 0 ? buildFilterParams() : {};
+      const result = await noteApi.export(noteIds, format, filterParams);
       
       if (result.success) {
         const json = JSON.stringify(result.data, null, 2);
@@ -538,6 +602,21 @@ export const DownloadPage = () => {
                 </th>
                 <th className="p-4">博主</th>
                 <th className="p-4 min-w-[200px]">标题</th>
+                <th className="p-4 min-w-[300px]">
+                  <div className="flex items-center gap-2">
+                    <span>内容详情</span>
+                    {notes.length > 0 && (
+                      <button
+                        onClick={copyAllContents}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded bg-gray-100 hover:bg-gray-200 text-gray-600 transition-colors"
+                        title="复制全部内容"
+                      >
+                        {copiedAll ? <CheckCircle className="w-3 h-3 text-green-500" /> : <Copy className="w-3 h-3" />}
+                        {copiedAll ? '已复制' : '全部复制'}
+                      </button>
+                    )}
+                  </div>
+                </th>
                 <th 
                   className="p-4 cursor-pointer hover:bg-gray-100"
                   onClick={() => handleSort('liked_count')}
@@ -568,7 +647,7 @@ export const DownloadPage = () => {
             <tbody>
               {notes.length === 0 ? (
                 <tr>
-                  <td colSpan="12" className="p-0">
+                  <td colSpan="13" className="p-0">
                     <div className="flex flex-col items-center justify-center text-gray-400 py-16">
                       <Coffee className="w-12 h-12 mb-4 text-gray-300" />
                       <p>
@@ -659,6 +738,33 @@ export const DownloadPage = () => {
                     <td className="p-4">
                       <div className="truncate max-w-[200px]" title={note.title}>
                         {note.title || '无标题'}
+                      </div>
+                    </td>
+                    <td className="p-4">
+                      <div className="flex items-start gap-2">
+                        <div 
+                          className="truncate max-w-[280px] text-gray-600 text-xs leading-relaxed" 
+                          title={note.desc || ''}
+                        >
+                          {note.desc ? (
+                            note.desc.length > 100 ? note.desc.slice(0, 100) + '...' : note.desc
+                          ) : (
+                            <span className="text-gray-400">-</span>
+                          )}
+                        </div>
+                        {note.desc && (
+                          <button
+                            onClick={() => copyContent(note.note_id, note.desc)}
+                            className="flex-shrink-0 p-1 rounded hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors"
+                            title="复制内容"
+                          >
+                            {copiedNoteId === note.note_id ? (
+                              <CheckCircle className="w-3.5 h-3.5 text-green-500" />
+                            ) : (
+                              <Copy className="w-3.5 h-3.5" />
+                            )}
+                          </button>
+                        )}
                       </div>
                     </td>
                     <td className="p-4 text-center">{note.liked_count || 0}</td>

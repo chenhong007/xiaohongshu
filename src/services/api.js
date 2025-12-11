@@ -248,8 +248,15 @@ export const noteApi = {
 
   /**
    * 导出笔记
+   * @param {Array} noteIds - 要导出的笔记ID列表，为空时导出筛选结果
+   * @param {string} format - 导出格式，默认 json
+   * @param {Object} filterParams - 筛选条件参数（当 noteIds 为空时使用）
    */
-  export: (noteIds, format = 'json') => api.post('/notes/export', { note_ids: noteIds, format }),
+  export: (noteIds, format = 'json', filterParams = {}) => api.post('/notes/export', { 
+    note_ids: noteIds, 
+    format,
+    ...filterParams
+  }),
 };
 
 // ==================== 加密工具 ====================

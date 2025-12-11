@@ -526,8 +526,19 @@ class SyncService:
                 # 媒体数据:只有非空时才更新
                 if note_data['video_addr']:
                     note.video_addr = note_data['video_addr']
+                # 【关键修复】图片列表:只有当新列表数量大于现有数量时才更新
+                # 防止列表页的1张封面覆盖详情页的完整图片列表
                 if note_data['image_list']:
-                    note.image_list = json.dumps(note_data['image_list'])
+                    new_img_count = len(note_data['image_list'])
+                    try:
+                        old_img_list = json.loads(note.image_list) if note.image_list else []
+                        old_img_count = len(old_img_list)
+                    except:
+                        old_img_count = 0
+                    # 只有新列表更多时才更新，或者旧列表为空/只有1张时也更新
+                    if new_img_count > old_img_count or old_img_count <= 1:
+                        note.image_list = json.dumps(note_data['image_list'])
+                        logger.info(f"Updated image_list for {note_id}: {old_img_count} -> {new_img_count} images")
                 if note_data['tags']:
                     note.tags = json.dumps(note_data['tags'])
                 if note_data['ip_location']:

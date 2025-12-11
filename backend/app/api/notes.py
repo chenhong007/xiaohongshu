@@ -266,22 +266,147 @@ def get_notes_stats():
 
 @notes_bp.route('/notes/export', methods=['POST'])
 def export_notes():
-    """导出笔记数据"""
-    note_ids = request.json.get('note_ids', [])
-    export_format = request.json.get('format', 'json')  # json / excel
+    """
+    导出笔记数据
+    
+    支持两种模式：
+    1. 传入 note_ids 列表，导出指定笔记
+    2. 传入筛选条件，导出筛选结果
+    """
+    from datetime import datetime, timedelta
+    from sqlalchemy import and_
+    
+    data = request.json or {}
+    note_ids = data.get('note_ids', [])
+    export_format = data.get('format', 'json')  # json / excel
     
     if note_ids:
+        # 模式1：导出指定笔记
         notes = Note.query.filter(Note.note_id.in_(note_ids)).all()
     else:
-        notes = Note.query.all()
+        # 模式2：按筛选条件导出
+        user_ids = data.get('user_ids', '')
+        keyword = data.get('keyword', '')
+        match_mode = data.get('match_mode', 'and')
+        time_range = data.get('time_range', 'all')
+        start_date_str = data.get('start_date', '')
+        end_date_str = data.get('end_date', '')
+        note_type = data.get('note_type', 'all')
+        
+        # 数值过滤参数（最小值）
+        liked_count_min = data.get('liked_count_min')
+        collected_count_min = data.get('collected_count_min')
+        comment_count_min = data.get('comment_count_min')
+        share_count_min = data.get('share_count_min')
+        
+        # 构建查询
+        query = Note.query
+        
+        # 用户筛选
+        if user_ids:
+            user_id_list = [uid.strip() for uid in user_ids.split(',') if uid.strip()]
+            if user_id_list:
+                query = query.filter(Note.user_id.in_(user_id_list))
+        
+        # 关键词搜索
+        if keyword:
+            keywords = keyword.split()
+            if match_mode == 'or':
+                conditions = [Note.title.contains(k) | Note.desc.contains(k) for k in keywords]
+                query = query.filter(or_(*conditions))
+            else:
+                for k in keywords:
+                    query = query.filter(Note.title.contains(k) | Note.desc.contains(k))
+        
+        # 时间范围筛选
+        if start_date_str or end_date_str:
+            if start_date_str:
+                try:
+                    start_dt = datetime.strptime(start_date_str, '%Y-%m-%d')
+                    query = query.filter(
+                        or_(
+                            and_(
+                                Note.upload_time.isnot(None),
+                                Note.upload_time != '',
+                                Note.upload_time >= start_date_str
+                            ),
+                            and_(
+                                or_(Note.upload_time.is_(None), Note.upload_time == ''),
+                                Note.last_updated >= start_dt
+                            )
+                        )
+                    )
+                except ValueError:
+                    pass
+            if end_date_str:
+                try:
+                    end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
+                    end_date_next = end_date + timedelta(days=1)
+                    query = query.filter(
+                        or_(
+                            and_(
+                                Note.upload_time.isnot(None),
+                                Note.upload_time != '',
+                                Note.upload_time < end_date_next.strftime('%Y-%m-%d')
+                            ),
+                            and_(
+                                or_(Note.upload_time.is_(None), Note.upload_time == ''),
+                                Note.last_updated < end_date_next
+                            )
+                        )
+                    )
+                except ValueError:
+                    pass
+        elif time_range != 'all':
+            now = datetime.now()
+            if time_range == 'day':
+                start_date = now - timedelta(days=1)
+            elif time_range == 'week':
+                start_date = now - timedelta(weeks=1)
+            elif time_range == 'month':
+                start_date = now - timedelta(days=30)
+            else:
+                start_date = None
+            
+            if start_date:
+                start_date_str_calc = start_date.strftime('%Y-%m-%d')
+                query = query.filter(
+                    or_(
+                        and_(
+                            Note.upload_time.isnot(None),
+                            Note.upload_time != '',
+                            Note.upload_time >= start_date_str_calc
+                        ),
+                        and_(
+                            or_(Note.upload_time.is_(None), Note.upload_time == ''),
+                            Note.last_updated >= start_date
+                        )
+                    )
+                )
+        
+        # 类型筛选
+        if note_type != 'all':
+            query = query.filter(Note.type == note_type)
+        
+        # 数值过滤（最小值）
+        if liked_count_min is not None:
+            query = query.filter(Note.liked_count >= liked_count_min)
+        if collected_count_min is not None:
+            query = query.filter(Note.collected_count >= collected_count_min)
+        if comment_count_min is not None:
+            query = query.filter(Note.comment_count >= comment_count_min)
+        if share_count_min is not None:
+            query = query.filter(Note.share_count >= share_count_min)
+        
+        notes = query.all()
     
-    data = [note.to_dict() for note in notes]
+    result_data = [note.to_dict() for note in notes]
     
     # TODO: 实现 Excel 导出
     return jsonify({
         'success': True,
-        'data': data,
-        'count': len(data)
+        'data': result_data,
+        'count': len(result_data)
     })
 
 
