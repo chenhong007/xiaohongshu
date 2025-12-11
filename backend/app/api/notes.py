@@ -264,6 +264,134 @@ def get_notes_stats():
     })
 
 
+@notes_bp.route('/media/stats', methods=['GET'])
+def get_media_stats():
+    """获取媒体文件统计信息"""
+    Config.init_paths()
+    
+    # 统计数据库中的封面情况
+    total_notes = Note.query.count()
+    with_cover_local = Note.query.filter(
+        Note.cover_local.isnot(None),
+        Note.cover_local != ''
+    ).count()
+    with_cover_remote = Note.query.filter(
+        Note.cover_remote.isnot(None),
+        Note.cover_remote != ''
+    ).count()
+    missing_local_cover = Note.query.filter(
+        Note.cover_remote.isnot(None),
+        Note.cover_remote != '',
+        (Note.cover_local.is_(None) | (Note.cover_local == ''))
+    ).count()
+    
+    # 统计本地文件情况
+    media_path = Config.MEDIA_PATH
+    cover_files = []
+    note_dirs = []
+    total_size = 0
+    
+    if os.path.exists(media_path):
+        for item in os.listdir(media_path):
+            item_path = os.path.join(media_path, item)
+            if os.path.isfile(item_path):
+                cover_files.append({
+                    'name': item,
+                    'size': os.path.getsize(item_path)
+                })
+                total_size += os.path.getsize(item_path)
+            elif os.path.isdir(item_path):
+                # 笔记专属目录（包含所有媒体）
+                dir_size = sum(
+                    os.path.getsize(os.path.join(item_path, f))
+                    for f in os.listdir(item_path)
+                    if os.path.isfile(os.path.join(item_path, f))
+                )
+                file_count = len([f for f in os.listdir(item_path) if os.path.isfile(os.path.join(item_path, f))])
+                note_dirs.append({
+                    'note_id': item,
+                    'file_count': file_count,
+                    'size': dir_size
+                })
+                total_size += dir_size
+    
+    return jsonify({
+        'success': True,
+        'data': {
+            'database': {
+                'total_notes': total_notes,
+                'with_cover_local': with_cover_local,
+                'with_cover_remote': with_cover_remote,
+                'missing_local_cover': missing_local_cover
+            },
+            'local_files': {
+                'cover_files_count': len(cover_files),
+                'note_dirs_count': len(note_dirs),
+                'total_size_mb': round(total_size / 1024 / 1024, 2),
+                'media_path': media_path
+            },
+            'note_dirs': note_dirs[:20] if note_dirs else [],  # 只返回前20个目录
+            'sample_covers': cover_files[:20] if cover_files else []  # 只返回前20个封面
+        }
+    })
+
+
+@notes_bp.route('/media/list', methods=['GET'])
+def list_media_files():
+    """列出本地媒体文件"""
+    Config.init_paths()
+    media_path = Config.MEDIA_PATH
+    
+    page = request.args.get('page', 1, type=int)
+    page_size = request.args.get('page_size', 50, type=int)
+    filter_type = request.args.get('type', 'all')  # all, cover, dir
+    
+    files = []
+    dirs = []
+    
+    if os.path.exists(media_path):
+        for item in os.listdir(media_path):
+            item_path = os.path.join(media_path, item)
+            if os.path.isfile(item_path):
+                files.append({
+                    'name': item,
+                    'type': 'cover',
+                    'size': os.path.getsize(item_path),
+                    'url': f'/api/media/{item}'
+                })
+            elif os.path.isdir(item_path):
+                file_list = [f for f in os.listdir(item_path) if os.path.isfile(os.path.join(item_path, f))]
+                dirs.append({
+                    'name': item,
+                    'type': 'dir',
+                    'file_count': len(file_list),
+                    'files': file_list[:10]  # 只返回前10个文件名
+                })
+    
+    # 根据过滤类型返回
+    if filter_type == 'cover':
+        items = files
+    elif filter_type == 'dir':
+        items = dirs
+    else:
+        items = files + dirs
+    
+    # 分页
+    total = len(items)
+    start = (page - 1) * page_size
+    end = start + page_size
+    
+    return jsonify({
+        'success': True,
+        'data': {
+            'items': items[start:end],
+            'total': total,
+            'page': page,
+            'page_size': page_size
+        }
+    })
+
+
 @notes_bp.route('/notes/export', methods=['POST'])
 def export_notes():
     """

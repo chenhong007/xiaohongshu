@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Search, RefreshCw, ChevronDown, Coffee, Download as DownloadIcon, Play, Image, Video, ExternalLink, Trash2, X, Check, Calendar, Heart, Star, MessageCircle, RotateCcw, Share2, Copy, CheckCircle } from 'lucide-react';
+import { Search, RefreshCw, ChevronDown, Coffee, Download as DownloadIcon, Play, Image, Video, ExternalLink, Trash2, X, Check, Calendar, Heart, Star, MessageCircle, RotateCcw, Share2, Copy, CheckCircle, Settings2, ChevronLeft, ChevronRight, Eye, EyeOff } from 'lucide-react';
 import { noteApi, accountApi } from '../services';
 
 export const DownloadPage = () => {
@@ -42,6 +42,58 @@ export const DownloadPage = () => {
   // 复制状态
   const [copiedNoteId, setCopiedNoteId] = useState(null);
   const [copiedAll, setCopiedAll] = useState(false);
+  
+  // 列配置状态
+  const [columnConfigOpen, setColumnConfigOpen] = useState(false);
+  const [visibleColumns, setVisibleColumns] = useState({
+    type: true,
+    preview: true,
+    remoteUrl: true,
+    xhsDetail: true,  // 小红书详情页链接
+    uploadTime: true,
+    blogger: true,
+    title: true,
+    content: true,
+    likedCount: true,
+    collectedCount: true,
+    commentCount: true,
+    shareCount: true,
+    actions: true,
+  });
+  
+  // 列配置定义
+  const columnDefinitions = [
+    { key: 'type', label: '类型' },
+    { key: 'preview', label: '预览' },
+    { key: 'remoteUrl', label: '远程URL' },
+    { key: 'xhsDetail', label: '小红书详情' },
+    { key: 'uploadTime', label: '发布时间' },
+    { key: 'blogger', label: '博主' },
+    { key: 'title', label: '标题' },
+    { key: 'content', label: '内容详情' },
+    { key: 'likedCount', label: '点赞' },
+    { key: 'collectedCount', label: '收藏' },
+    { key: 'commentCount', label: '评论' },
+    { key: 'shareCount', label: '转发' },
+    { key: 'actions', label: '操作' },
+  ];
+  
+  // 切换列可见性
+  const toggleColumnVisibility = (columnKey) => {
+    setVisibleColumns(prev => ({
+      ...prev,
+      [columnKey]: !prev[columnKey]
+    }));
+  };
+  
+  // 全选/取消全选列
+  const toggleAllColumns = (visible) => {
+    const newState = {};
+    columnDefinitions.forEach(col => {
+      newState[col.key] = visible;
+    });
+    setVisibleColumns(newState);
+  };
 
   // 获取账号列表（用于筛选下拉框）
   useEffect(() => {
@@ -577,77 +629,92 @@ export const DownloadPage = () => {
         </div>
       </div>
 
-      {/* 表格 */}
-      <div className="bg-white rounded-lg shadow-sm border flex-1 flex flex-col min-h-[400px]">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm text-left">
-            <thead className="text-gray-500 bg-gray-50 border-b">
-              <tr>
-                <th className="p-4 w-10">
-                  <input 
-                    type="checkbox" 
-                    checked={selectedNoteIds.size === notes.length && notes.length > 0}
-                    onChange={toggleSelectAll}
-                    className="rounded border-gray-300 text-blue-600"
-                  />
-                </th>
-                <th className="p-4">类型</th>
-                <th className="p-4">预览</th>
-                <th className="p-4">远程URL</th>
-                <th 
-                  className="p-4 cursor-pointer hover:bg-gray-100"
-                  onClick={() => handleSort('upload_time')}
-                >
-                  发布时间 <SortIcon field="upload_time" />
-                </th>
-                <th className="p-4">博主</th>
-                <th className="p-4 min-w-[200px]">标题</th>
-                <th className="p-4 min-w-[300px]">
-                  <div className="flex items-center gap-2">
-                    <span>内容详情</span>
-                    {notes.length > 0 && (
-                      <button
-                        onClick={copyAllContents}
-                        className="inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded bg-gray-100 hover:bg-gray-200 text-gray-600 transition-colors"
-                        title="复制全部内容"
-                      >
-                        {copiedAll ? <CheckCircle className="w-3 h-3 text-green-500" /> : <Copy className="w-3 h-3" />}
-                        {copiedAll ? '已复制' : '全部复制'}
-                      </button>
-                    )}
-                  </div>
-                </th>
-                <th 
-                  className="p-4 cursor-pointer hover:bg-gray-100"
-                  onClick={() => handleSort('liked_count')}
-                >
-                  点赞 <SortIcon field="liked_count" />
-                </th>
-                <th 
-                  className="p-4 cursor-pointer hover:bg-gray-100"
-                  onClick={() => handleSort('collected_count')}
-                >
-                  收藏 <SortIcon field="collected_count" />
-                </th>
-                <th 
-                  className="p-4 cursor-pointer hover:bg-gray-100"
-                  onClick={() => handleSort('comment_count')}
-                >
-                  评论 <SortIcon field="comment_count" />
-                </th>
-                <th 
-                  className="p-4 cursor-pointer hover:bg-gray-100"
-                  onClick={() => handleSort('share_count')}
-                >
-                  转发 <SortIcon field="share_count" />
-                </th>
-                <th className="p-4">操作</th>
-              </tr>
-            </thead>
+      {/* 表格区域 - 包含表格和列配置面板 */}
+      <div className="flex gap-0 flex-1 min-h-[400px]">
+        {/* 表格 */}
+        <div className="bg-white rounded-lg shadow-sm border flex-1 flex flex-col overflow-hidden">
+          <div className="overflow-x-auto flex-1">
+            <table className="w-full text-sm text-left">
+              <thead className="text-gray-500 bg-gray-50 border-b sticky top-0">
+                <tr>
+                  <th className="p-4 w-10">
+                    <input 
+                      type="checkbox" 
+                      checked={selectedNoteIds.size === notes.length && notes.length > 0}
+                      onChange={toggleSelectAll}
+                      className="rounded border-gray-300 text-blue-600"
+                    />
+                  </th>
+                  {visibleColumns.type && <th className="p-4">类型</th>}
+                  {visibleColumns.preview && <th className="p-4">预览</th>}
+                  {visibleColumns.remoteUrl && <th className="p-4">远程URL</th>}
+                  {visibleColumns.xhsDetail && <th className="p-4">小红书详情</th>}
+                  {visibleColumns.uploadTime && (
+                    <th 
+                      className="p-4 cursor-pointer hover:bg-gray-100"
+                      onClick={() => handleSort('upload_time')}
+                    >
+                      发布时间 <SortIcon field="upload_time" />
+                    </th>
+                  )}
+                  {visibleColumns.blogger && <th className="p-4">博主</th>}
+                  {visibleColumns.title && <th className="p-4 min-w-[200px]">标题</th>}
+                  {visibleColumns.content && (
+                    <th className="p-4 min-w-[300px]">
+                      <div className="flex items-center gap-2">
+                        <span>内容详情</span>
+                        {notes.length > 0 && (
+                          <button
+                            onClick={copyAllContents}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded bg-gray-100 hover:bg-gray-200 text-gray-600 transition-colors"
+                            title="复制全部内容"
+                          >
+                            {copiedAll ? <CheckCircle className="w-3 h-3 text-green-500" /> : <Copy className="w-3 h-3" />}
+                            {copiedAll ? '已复制' : '全部复制'}
+                          </button>
+                        )}
+                      </div>
+                    </th>
+                  )}
+                  {visibleColumns.likedCount && (
+                    <th 
+                      className="p-4 cursor-pointer hover:bg-gray-100"
+                      onClick={() => handleSort('liked_count')}
+                    >
+                      点赞 <SortIcon field="liked_count" />
+                    </th>
+                  )}
+                  {visibleColumns.collectedCount && (
+                    <th 
+                      className="p-4 cursor-pointer hover:bg-gray-100"
+                      onClick={() => handleSort('collected_count')}
+                    >
+                      收藏 <SortIcon field="collected_count" />
+                    </th>
+                  )}
+                  {visibleColumns.commentCount && (
+                    <th 
+                      className="p-4 cursor-pointer hover:bg-gray-100"
+                      onClick={() => handleSort('comment_count')}
+                    >
+                      评论 <SortIcon field="comment_count" />
+                    </th>
+                  )}
+                  {visibleColumns.shareCount && (
+                    <th 
+                      className="p-4 cursor-pointer hover:bg-gray-100"
+                      onClick={() => handleSort('share_count')}
+                    >
+                      转发 <SortIcon field="share_count" />
+                    </th>
+                  )}
+                  {visibleColumns.actions && <th className="p-4">操作</th>}
+                </tr>
+              </thead>
             <tbody>
               {notes.length === 0 ? (
                 <tr>
-                  <td colSpan="13" className="p-0">
+                  <td colSpan={1 + Object.values(visibleColumns).filter(Boolean).length} className="p-0">
                     <div className="flex flex-col items-center justify-center text-gray-400 py-16">
                       <Coffee className="w-12 h-12 mb-4 text-gray-300" />
                       <p>
@@ -670,6 +737,7 @@ export const DownloadPage = () => {
                 notes.map((note) => {
                   const previewSrc = note.cover_local || note.cover_remote || (note.image_list && note.image_list[0]);
                   const remoteSrc = note.cover_remote || (note.image_list && note.image_list[0]) || '';
+                  const xhsDetailUrl = `https://www.xiaohongshu.com/explore/${note.note_id}`;
                   return (
                   <tr key={note.note_id} className="border-b hover:bg-gray-50">
                     <td className="p-4">
@@ -680,140 +748,274 @@ export const DownloadPage = () => {
                         className="rounded border-gray-300 text-blue-600"
                       />
                     </td>
-                    <td className="p-4">
-                      {note.type === '视频' ? (
-                        <span className="inline-flex items-center gap-1 text-blue-600">
-                          <Video className="w-4 h-4" /> 视频
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 text-green-600">
-                          <Image className="w-4 h-4" /> 图集
-                        </span>
-                      )}
-                    </td>
-                    <td className="p-4">
-                      {previewSrc ? (
-                        <div className="group relative inline-block">
-                          <img
-                            src={previewSrc}
-                            alt="封面"
-                            className="w-12 h-12 rounded object-cover border border-gray-200"
-                          />
-                          <div className="hidden group-hover:block absolute left-14 top-1/2 -translate-y-1/2 z-50 bg-white border border-gray-200 rounded shadow-lg p-2">
+                    {visibleColumns.type && (
+                      <td className="p-4">
+                        {note.type === '视频' ? (
+                          <span className="inline-flex items-center gap-1 text-blue-600">
+                            <Video className="w-4 h-4" /> 视频
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-green-600">
+                            <Image className="w-4 h-4" /> 图集
+                          </span>
+                        )}
+                      </td>
+                    )}
+                    {visibleColumns.preview && (
+                      <td className="p-4">
+                        {previewSrc ? (
+                          <div className="group relative inline-block">
                             <img
                               src={previewSrc}
-                              alt="预览大图"
-                              className="w-64 h-64 object-contain rounded"
+                              alt="封面"
+                              className="w-12 h-12 rounded object-cover border border-gray-200"
+                              onError={(e) => {
+                                // 如果本地图片加载失败，尝试使用远程图片
+                                const fallback = remoteSrc || (note.image_list && note.image_list[0]);
+                                if (fallback && e.target.src !== fallback) {
+                                  e.target.src = fallback;
+                                } else {
+                                  // 远程也失败，显示占位图
+                                  e.target.style.display = 'none';
+                                  e.target.parentElement.innerHTML = '<span class="text-gray-400 text-xs">加载失败</span>';
+                                }
+                              }}
                             />
+                            <div className="hidden group-hover:block absolute left-14 top-1/2 -translate-y-1/2 z-50 bg-white border border-gray-200 rounded shadow-lg p-2">
+                              <img
+                                src={previewSrc}
+                                alt="预览大图"
+                                className="w-64 h-64 object-contain rounded"
+                                onError={(e) => {
+                                  const fallback = remoteSrc || (note.image_list && note.image_list[0]);
+                                  if (fallback && e.target.src !== fallback) {
+                                    e.target.src = fallback;
+                                  }
+                                }}
+                              />
+                            </div>
                           </div>
-                        </div>
-                      ) : (
-                        <span className="text-gray-400 text-xs">无图</span>
-                      )}
-                    </td>
-                    <td className="p-4">
-                      {remoteSrc ? (
+                        ) : (
+                          <span className="text-gray-400 text-xs">无图</span>
+                        )}
+                      </td>
+                    )}
+                    {visibleColumns.remoteUrl && (
+                      <td className="p-4">
+                        {remoteSrc ? (
+                          <a 
+                            href={remoteSrc} 
+                            target="_blank" 
+                            rel="noopener noreferrer"
+                            className="text-blue-500 hover:text-blue-700 break-all text-xs"
+                            title={remoteSrc}
+                          >
+                            远程链接
+                          </a>
+                        ) : (
+                          <span className="text-gray-400 text-xs">-</span>
+                        )}
+                      </td>
+                    )}
+                    {visibleColumns.xhsDetail && (
+                      <td className="p-4">
                         <a 
-                          href={remoteSrc} 
-                          target="_blank" 
+                          href={xhsDetailUrl}
+                          target="_blank"
                           rel="noopener noreferrer"
-                          className="text-blue-500 hover:text-blue-700 break-all text-xs"
-                          title={remoteSrc}
+                          className="inline-flex items-center gap-1 px-2 py-1 bg-red-50 text-red-600 rounded text-xs hover:bg-red-100 transition-colors"
+                          title="在小红书查看原文"
                         >
-                          远程链接
+                          <ExternalLink className="w-3 h-3" />
+                          查看原文
                         </a>
-                      ) : (
-                        <span className="text-gray-400 text-xs">-</span>
-                      )}
-                    </td>
-                    <td className="p-4 text-gray-500">{note.upload_time || '-'}</td>
-                    <td className="p-4">
-                      <div className="flex items-center gap-2">
-                        <div className="w-6 h-6 rounded-full bg-gray-200 overflow-hidden flex-shrink-0">
-                          {note.avatar && <img src={note.avatar} alt="" className="w-full h-full object-cover" />}
+                      </td>
+                    )}
+                    {visibleColumns.uploadTime && (
+                      <td className="p-4 text-gray-500">{note.upload_time || '-'}</td>
+                    )}
+                    {visibleColumns.blogger && (
+                      <td className="p-4">
+                        <div className="flex items-center gap-2">
+                          <div className="w-6 h-6 rounded-full bg-gray-200 overflow-hidden flex-shrink-0">
+                            {note.avatar && <img src={note.avatar} alt="" className="w-full h-full object-cover" />}
+                          </div>
+                          <span className="truncate max-w-[100px]">{note.nickname}</span>
                         </div>
-                        <span className="truncate max-w-[100px]">{note.nickname}</span>
-                      </div>
-                    </td>
-                    <td className="p-4">
-                      <div className="truncate max-w-[200px]" title={note.title}>
-                        {note.title || '无标题'}
-                      </div>
-                    </td>
-                    <td className="p-4">
-                      <div className="flex items-start gap-2">
-                        <div 
-                          className="truncate max-w-[280px] text-gray-600 text-xs leading-relaxed" 
-                          title={note.desc || ''}
-                        >
-                          {note.desc ? (
-                            note.desc.length > 100 ? note.desc.slice(0, 100) + '...' : note.desc
-                          ) : (
-                            <span className="text-gray-400">-</span>
+                      </td>
+                    )}
+                    {visibleColumns.title && (
+                      <td className="p-4">
+                        <div className="truncate max-w-[200px]" title={note.title}>
+                          {note.title || '无标题'}
+                        </div>
+                      </td>
+                    )}
+                    {visibleColumns.content && (
+                      <td className="p-4">
+                        <div className="flex items-start gap-2">
+                          <div 
+                            className="truncate max-w-[280px] text-gray-600 text-xs leading-relaxed" 
+                            title={note.desc || ''}
+                          >
+                            {note.desc ? (
+                              note.desc.length > 100 ? note.desc.slice(0, 100) + '...' : note.desc
+                            ) : (
+                              <span className="text-gray-400">-</span>
+                            )}
+                          </div>
+                          {note.desc && (
+                            <button
+                              onClick={() => copyContent(note.note_id, note.desc)}
+                              className="flex-shrink-0 p-1 rounded hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors"
+                              title="复制内容"
+                            >
+                              {copiedNoteId === note.note_id ? (
+                                <CheckCircle className="w-3.5 h-3.5 text-green-500" />
+                              ) : (
+                                <Copy className="w-3.5 h-3.5" />
+                              )}
+                            </button>
                           )}
                         </div>
-                        {note.desc && (
-                          <button
-                            onClick={() => copyContent(note.note_id, note.desc)}
-                            className="flex-shrink-0 p-1 rounded hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors"
-                            title="复制内容"
-                          >
-                            {copiedNoteId === note.note_id ? (
-                              <CheckCircle className="w-3.5 h-3.5 text-green-500" />
-                            ) : (
-                              <Copy className="w-3.5 h-3.5" />
-                            )}
-                          </button>
-                        )}
-                      </div>
-                    </td>
-                    <td className="p-4 text-center">{note.liked_count || 0}</td>
-                    <td className="p-4 text-center">{note.collected_count || 0}</td>
-                    <td className="p-4 text-center">{note.comment_count || 0}</td>
-                    <td className="p-4 text-center">{note.share_count || 0}</td>
-                    <td className="p-4">
-                      <a 
-                        href={`https://www.xiaohongshu.com/explore/${note.note_id}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-blue-500 hover:text-blue-700"
-                        title="查看原文"
-                      >
-                        <ExternalLink className="w-4 h-4" />
-                      </a>
-                    </td>
+                      </td>
+                    )}
+                    {visibleColumns.likedCount && (
+                      <td className="p-4 text-center">{note.liked_count || 0}</td>
+                    )}
+                    {visibleColumns.collectedCount && (
+                      <td className="p-4 text-center">{note.collected_count || 0}</td>
+                    )}
+                    {visibleColumns.commentCount && (
+                      <td className="p-4 text-center">{note.comment_count || 0}</td>
+                    )}
+                    {visibleColumns.shareCount && (
+                      <td className="p-4 text-center">{note.share_count || 0}</td>
+                    )}
+                    {visibleColumns.actions && (
+                      <td className="p-4">
+                        <a 
+                          href={xhsDetailUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-blue-500 hover:text-blue-700"
+                          title="查看原文"
+                        >
+                          <ExternalLink className="w-4 h-4" />
+                        </a>
+                      </td>
+                    )}
                   </tr>
                   );
                 })
               )}
             </tbody>
-          </table>
+            </table>
+          </div>
+          
+          {/* 分页 */}
+          {totalPages > 1 && (
+            <div className="p-4 border-t flex items-center justify-between">
+              <div className="text-sm text-gray-500">
+                第 {page} / {totalPages} 页，共 {totalCount} 条
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setPage(p => Math.max(1, p - 1))}
+                  disabled={page === 1}
+                  className="px-3 py-1 border rounded text-sm disabled:opacity-50 hover:bg-gray-50"
+                >
+                  上一页
+                </button>
+                <button
+                  onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                  disabled={page === totalPages}
+                  className="px-3 py-1 border rounded text-sm disabled:opacity-50 hover:bg-gray-50"
+                >
+                  下一页
+                </button>
+              </div>
+            </div>
+          )}
         </div>
         
-        {/* 分页 */}
-        {totalPages > 1 && (
-          <div className="p-4 border-t flex items-center justify-between">
-            <div className="text-sm text-gray-500">
-              第 {page} / {totalPages} 页，共 {totalCount} 条
-            </div>
-            <div className="flex gap-2">
-              <button
-                onClick={() => setPage(p => Math.max(1, p - 1))}
-                disabled={page === 1}
-                className="px-3 py-1 border rounded text-sm disabled:opacity-50 hover:bg-gray-50"
-              >
-                上一页
-              </button>
-              <button
-                onClick={() => setPage(p => Math.min(totalPages, p + 1))}
-                disabled={page === totalPages}
-                className="px-3 py-1 border rounded text-sm disabled:opacity-50 hover:bg-gray-50"
-              >
-                下一页
-              </button>
-            </div>
+        {/* 可收缩的列配置面板 */}
+        <div className={`flex-shrink-0 transition-all duration-300 ease-in-out ${columnConfigOpen ? 'w-56' : 'w-8'}`}>
+          {/* 展开/收起按钮 */}
+          <div 
+            className={`h-full bg-white border rounded-lg shadow-sm flex flex-col ${columnConfigOpen ? '' : 'items-center justify-center cursor-pointer hover:bg-gray-50'}`}
+            onClick={() => !columnConfigOpen && setColumnConfigOpen(true)}
+          >
+            {columnConfigOpen ? (
+              <>
+                {/* 面板头部 */}
+                <div className="p-3 border-b flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-sm font-medium text-gray-700">
+                    <Settings2 className="w-4 h-4" />
+                    列配置
+                  </div>
+                  <button 
+                    onClick={() => setColumnConfigOpen(false)}
+                    className="p-1 hover:bg-gray-100 rounded transition-colors"
+                    title="收起"
+                  >
+                    <ChevronRight className="w-4 h-4 text-gray-400" />
+                  </button>
+                </div>
+                
+                {/* 快捷操作 */}
+                <div className="px-3 py-2 border-b flex gap-2">
+                  <button
+                    onClick={() => toggleAllColumns(true)}
+                    className="flex-1 px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded transition-colors flex items-center justify-center gap-1"
+                  >
+                    <Eye className="w-3 h-3" /> 全显
+                  </button>
+                  <button
+                    onClick={() => toggleAllColumns(false)}
+                    className="flex-1 px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded transition-colors flex items-center justify-center gap-1"
+                  >
+                    <EyeOff className="w-3 h-3" /> 全隐
+                  </button>
+                </div>
+                
+                {/* 列列表 */}
+                <div className="flex-1 overflow-y-auto p-2">
+                  {columnDefinitions.map(col => (
+                    <label 
+                      key={col.key}
+                      className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-gray-50 cursor-pointer transition-colors"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={visibleColumns[col.key]}
+                        onChange={() => toggleColumnVisibility(col.key)}
+                        className="rounded border-gray-300 text-red-500 focus:ring-red-500 w-4 h-4"
+                      />
+                      <span className={`text-sm ${visibleColumns[col.key] ? 'text-gray-700' : 'text-gray-400'}`}>
+                        {col.label}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+                
+                {/* 已显示列数统计 */}
+                <div className="px-3 py-2 border-t text-xs text-gray-400 text-center">
+                  已显示 {Object.values(visibleColumns).filter(Boolean).length} / {columnDefinitions.length} 列
+                </div>
+              </>
+            ) : (
+              /* 收起状态 - 显示一个竖向的提示 */
+              <div className="flex flex-col items-center gap-2 text-gray-400" title="展开列配置">
+                <ChevronLeft className="w-4 h-4" />
+                <div className="writing-mode-vertical text-xs" style={{ writingMode: 'vertical-rl' }}>
+                  列配置
+                </div>
+                <Settings2 className="w-4 h-4" />
+              </div>
+            )}
           </div>
-        )}
+        </div>
       </div>
     </div>
   );

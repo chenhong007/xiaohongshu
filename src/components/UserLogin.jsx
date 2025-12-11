@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { User, LogIn, LogOut, KeyRound, CheckCircle, XCircle, Clock, AlertTriangle, RefreshCw } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { User, LogIn, LogOut, KeyRound, CheckCircle, XCircle, Clock, AlertTriangle, RefreshCw, Loader2 } from 'lucide-react';
 import { authApi, COOKIE_INVALID_EVENT } from '../services';
 
 // 默认头像
@@ -10,6 +10,54 @@ const POLL_INTERVAL = 30000;
 
 // 运行时长更新间隔（毫秒）- 1秒
 const RUNTIME_UPDATE_INTERVAL = 1000;
+
+// 本地缓存 key
+const CACHE_KEY = 'xhs_user_cache';
+
+/**
+ * 保存用户状态到本地缓存
+ */
+const saveUserCache = (userData) => {
+  try {
+    sessionStorage.setItem(CACHE_KEY, JSON.stringify({
+      ...userData,
+      cachedAt: Date.now()
+    }));
+  } catch (e) {
+    console.warn('Failed to save user cache:', e);
+  }
+};
+
+/**
+ * 从本地缓存读取用户状态
+ * 缓存有效期：5分钟
+ */
+const loadUserCache = () => {
+  try {
+    const cached = sessionStorage.getItem(CACHE_KEY);
+    if (cached) {
+      const data = JSON.parse(cached);
+      // 缓存有效期 5 分钟
+      if (Date.now() - data.cachedAt < 5 * 60 * 1000) {
+        return data;
+      }
+    }
+  } catch (e) {
+    console.warn('Failed to load user cache:', e);
+  }
+  return null;
+};
+
+/**
+ * 清除用户缓存
+ */
+const clearUserCache = () => {
+  try {
+    sessionStorage.removeItem(CACHE_KEY);
+  } catch (e) {
+    console.warn('Failed to clear user cache:', e);
+  }
+};
 
 /**
  * 格式化运行时长
@@ -50,36 +98,55 @@ const formatDateTime = (isoString) => {
 };
 
 export const UserLogin = () => {
-  const [user, setUser] = useState(null);
+  // 从缓存初始化用户状态，避免页面跳转时闪烁
+  const cachedUser = loadUserCache();
+  const [user, setUser] = useState(cachedUser?.user || null);
   const [loading, setLoading] = useState(false);
+  const [initializing, setInitializing] = useState(!cachedUser); // 初始化状态
   const [error, setError] = useState(null);
   const [showManualInput, setShowManualInput] = useState(false);
   const [cookieInput, setCookieInput] = useState('');
-  const [runInfo, setRunInfo] = useState(null);
-  const [currentRunSeconds, setCurrentRunSeconds] = useState(0);
+  const [runInfo, setRunInfo] = useState(cachedUser?.runInfo || null);
+  const [currentRunSeconds, setCurrentRunSeconds] = useState(cachedUser?.currentRunSeconds || 0);
   const [invalidInfo, setInvalidInfo] = useState(null); // 失效信息
+  
+  // 用于防止重复请求
+  const fetchingRef = useRef(false);
 
   // 获取当前用户信息
   const fetchUser = useCallback(async (forceCheck = false) => {
+    // 防止重复请求
+    if (fetchingRef.current) return;
+    fetchingRef.current = true;
+    
     try {
       const data = await authApi.getCurrentUser(forceCheck);
       
       if (data.is_connected) {
-        setUser({
+        const newUser = {
           userId: data.user_id,
           username: data.nickname || '小红书用户',
           avatar: data.avatar || DEFAULT_AVATAR
-        });
+        };
+        setUser(newUser);
         setError(null);
         setInvalidInfo(null);
         
         // 设置运行时长信息
-        if (data.run_info) {
-          setRunInfo(data.run_info);
-          setCurrentRunSeconds(data.run_info.current_run_seconds || 0);
-        }
+        const newRunInfo = data.run_info || null;
+        const newRunSeconds = data.run_info?.current_run_seconds || 0;
+        setRunInfo(newRunInfo);
+        setCurrentRunSeconds(newRunSeconds);
+        
+        // 保存到缓存
+        saveUserCache({
+          user: newUser,
+          runInfo: newRunInfo,
+          currentRunSeconds: newRunSeconds
+        });
       } else {
         setUser(null);
+        clearUserCache(); // 清除缓存
         
         // 如果之前是连接状态，显示失效信息
         if (data.was_connected) {
@@ -100,7 +167,13 @@ export const UserLogin = () => {
       }
     } catch (err) {
       console.error("Failed to fetch user info", err);
-      setUser(null);
+      // 只有在没有缓存用户时才清除状态
+      if (!cachedUser) {
+        setUser(null);
+      }
+    } finally {
+      fetchingRef.current = false;
+      setInitializing(false);
     }
   }, []);
 
@@ -115,6 +188,7 @@ export const UserLogin = () => {
     const handleCookieInvalid = () => {
       console.log('Cookie invalid event received');
       setUser(null);
+      clearUserCache(); // 清除缓存
       setError('登录已失效，请重新登录');
     };
     
@@ -173,17 +247,26 @@ export const UserLogin = () => {
       const result = await authApi.setManualCookieEncrypted(cookieInput);
       
       if (result.user_id || result.nickname) {
-        setUser({
+        const newUser = {
           userId: result.user_id,
           username: result.nickname || '小红书用户',
           avatar: result.avatar || DEFAULT_AVATAR
-        });
+        };
+        setUser(newUser);
         
         // 设置运行时长信息
-        if (result.run_info) {
-          setRunInfo(result.run_info);
+        const newRunInfo = result.run_info || null;
+        if (newRunInfo) {
+          setRunInfo(newRunInfo);
           setCurrentRunSeconds(0);
         }
+        
+        // 保存到缓存
+        saveUserCache({
+          user: newUser,
+          runInfo: newRunInfo,
+          currentRunSeconds: 0
+        });
         
         setShowManualInput(false);
         setCookieInput('');
@@ -195,16 +278,25 @@ export const UserLogin = () => {
       try {
         const result = await authApi.setManualCookie(cookieInput);
         if (result.user_id || result.nickname) {
-          setUser({
+          const newUser = {
             userId: result.user_id,
             username: result.nickname || '小红书用户',
             avatar: result.avatar || DEFAULT_AVATAR
-          });
+          };
+          setUser(newUser);
           
-          if (result.run_info) {
-            setRunInfo(result.run_info);
+          const newRunInfo = result.run_info || null;
+          if (newRunInfo) {
+            setRunInfo(newRunInfo);
             setCurrentRunSeconds(0);
           }
+          
+          // 保存到缓存
+          saveUserCache({
+            user: newUser,
+            runInfo: newRunInfo,
+            currentRunSeconds: 0
+          });
           
           setShowManualInput(false);
           setCookieInput('');
@@ -225,6 +317,7 @@ export const UserLogin = () => {
       setUser(null);
       setRunInfo(null);
       setCurrentRunSeconds(0);
+      clearUserCache(); // 清除缓存
     } catch (err) {
       console.error("Logout failed", err);
     }
@@ -249,6 +342,16 @@ export const UserLogin = () => {
       </div>
     );
   };
+
+  // 初始化加载状态（没有缓存时显示）
+  if (initializing && !user) {
+    return (
+      <div className="flex items-center justify-center gap-2 py-3 text-gray-500">
+        <Loader2 className="w-4 h-4 animate-spin" />
+        <span className="text-sm">检查登录状态...</span>
+      </div>
+    );
+  }
 
   // 已登录状态
   if (user) {

@@ -609,6 +609,9 @@ class SyncService:
                 
         except Exception as e:
             logger.error(f"Error in _download_all_media for {note_id}: {e}")
+
+    @staticmethod
+    def _save_note(note_data, download_media=False):
         """保存笔记到数据库（使用merge避免重复插入）
         
         【重要说明】
