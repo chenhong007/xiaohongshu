@@ -273,6 +273,104 @@ def stop_sync():
     return success_response(message='正在停止同步任务')
 
 
+@accounts_bp.route('/accounts/<int:account_id>/fix-missing', methods=['POST'])
+def fix_missing_fields(account_id):
+    """
+    补齐指定博主的缺失字段（发布时间、收藏数、评论数等）
+    
+    这个功能用于修复之前用极速同步采集的笔记，补齐详情页数据。
+    
+    Request Body:
+        - force: 是否强制重新采集所有笔记 (默认 false，只采集缺失字段的笔记)
+    """
+    from ..models import Note
+    
+    account = Account.query.get(account_id)
+    if not account:
+        return ApiResponse.not_found('账号不存在')
+    
+    data = request.json or {}
+    force = data.get('force', False)
+    
+    try:
+        # 统计该博主缺失 upload_time 的笔记数量
+        query = Note.query.filter_by(user_id=account.user_id)
+        
+        if not force:
+            # 只查询缺失 upload_time 的笔记
+            from sqlalchemy import or_
+            query = query.filter(or_(
+                Note.upload_time.is_(None),
+                Note.upload_time == ''
+            ))
+        
+        missing_count = query.count()
+        
+        if missing_count == 0:
+            return success_response(
+                data={'missing_count': 0},
+                message='该博主的所有笔记都已有完整的发布时间'
+            )
+        
+        # 启动深度同步（会自动检测并补齐缺失字段）
+        SyncService.start_sync([account_id], sync_mode='deep')
+        logger.info(f"开始补齐账号 {account.user_id} 的缺失字段，共 {missing_count} 条笔记需要处理")
+        
+        return success_response(
+            data={'missing_count': missing_count},
+            message=f'开始补齐缺失数据，共 {missing_count} 条笔记需要处理'
+        )
+    except Exception as e:
+        logger.error(f"补齐缺失字段失败: {e}")
+        return ApiResponse.server_error('补齐缺失字段失败')
+
+
+@accounts_bp.route('/accounts/stats/missing', methods=['GET'])
+def get_missing_stats():
+    """
+    获取所有博主的缺失字段统计
+    
+    返回每个博主缺失 upload_time 的笔记数量
+    """
+    from ..models import Note
+    from sqlalchemy import func, or_
+    
+    try:
+        # 查询每个博主缺失 upload_time 的笔记数量
+        missing_stats = db.session.query(
+            Account.id,
+            Account.user_id,
+            Account.name,
+            func.count(Note.id).label('missing_count')
+        ).outerjoin(
+            Note,
+            (Account.user_id == Note.user_id) & 
+            (or_(Note.upload_time.is_(None), Note.upload_time == ''))
+        ).group_by(Account.id).all()
+        
+        result = []
+        for stat in missing_stats:
+            result.append({
+                'account_id': stat.id,
+                'user_id': stat.user_id,
+                'name': stat.name,
+                'missing_upload_time_count': stat.missing_count or 0
+            })
+        
+        total_missing = sum(s['missing_upload_time_count'] for s in result)
+        
+        return success_response(
+            data={
+                'accounts': result,
+                'total_missing': total_missing
+            },
+            message=f'共有 {total_missing} 条笔记缺失发布时间'
+        )
+    except Exception as e:
+        logger.error(f"获取缺失统计失败: {e}")
+        return ApiResponse.server_error('获取缺失统计失败')
+
+
 @accounts_bp.route('/reset', methods=['POST'])
 @require_admin  # 🔒 需要管理员权限
 def reset_db():

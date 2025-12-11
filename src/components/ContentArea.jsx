@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { RefreshCw, CheckCircle, Circle, Trash2, Upload, Download, AlertCircle, Zap, Database, StopCircle } from 'lucide-react';
+import { RefreshCw, CheckCircle, Circle, Trash2, Upload, Download, AlertCircle, Zap, Database, StopCircle, Wrench } from 'lucide-react';
 import { accountApi, authApi, COOKIE_INVALID_EVENT } from '../services';
 
 export const ContentArea = ({ 
@@ -299,6 +299,31 @@ export const ContentArea = ({
     }
   };
 
+  // 补齐缺失数据（发布时间等）
+  const handleFixMissing = async (accountId) => {
+    console.log('[同步调试] ========== 补齐缺失数据 ==========');
+    console.log(`[同步调试] 账号ID: ${accountId}`);
+    
+    // 乐观更新
+    updateLocalAccountsStatus([accountId], 'processing', 0);
+    
+    try {
+      const result = await accountApi.fixMissing(accountId, false);
+      console.log('[同步调试] 补齐缺失数据成功:', result);
+      if (result.missing_count === 0) {
+        alert('该博主的所有笔记都已有完整的发布时间');
+        fetchAccounts();
+        return;
+      }
+      // 减少等待时间，因为我们已经乐观更新了状态
+      setTimeout(fetchAccounts, 200);
+    } catch (err) {
+      console.error('[同步调试] 补齐缺失数据失败:', err);
+      setError('补齐缺失数据失败');
+      fetchAccounts();
+    }
+  };
+
   // 批量导入（文件上传）
   const handleBatchImport = () => {
     const input = document.createElement('input');
@@ -433,7 +458,7 @@ export const ContentArea = ({
                 onClick={() => handleBatchSync('fast')}
                 className="px-4 py-2 bg-green-100 text-green-700 rounded hover:bg-green-200 text-sm flex items-center gap-1 border border-green-200"
                 disabled={loading}
-                title="只更新列表页数据，不采集详情，速度极快"
+                title="只更新点赞数，不采集发布时间/收藏/评论/转发等详情数据"
               >
                 <Zap className="w-4 h-4" /> 
                 {selectedIds.size > 0 ? `极速同步 (${selectedIds.size})` : '极速同步全部'}
@@ -443,7 +468,7 @@ export const ContentArea = ({
                 onClick={() => handleBatchSync('deep')}
                 className="px-4 py-2 bg-blue-100 text-blue-700 rounded hover:bg-blue-200 text-sm flex items-center gap-1 border border-blue-200"
                 disabled={loading}
-                title="新笔记自动采集详情和素材，旧笔记只更新数据"
+                title="采集完整数据（发布时间/收藏/评论/转发/图集），缺失数据会自动补齐"
               >
                 <Database className="w-4 h-4" /> 
                 {selectedIds.size > 0 ? `深度同步 (${selectedIds.size})` : '深度同步全部'}
@@ -582,6 +607,14 @@ export const ContentArea = ({
                           title="深度同步"
                         >
                           <Database className="w-4 h-4" />
+                        </button>
+                        <button 
+                          className="p-1 hover:bg-orange-100 rounded text-orange-600 disabled:opacity-50"
+                          onClick={() => handleFixMissing(account.id)}
+                          disabled={account.status === 'processing'}
+                          title="补齐缺失数据（发布时间等）"
+                        >
+                          <Wrench className="w-4 h-4" />
                         </button>
                       </div>
                     </td>

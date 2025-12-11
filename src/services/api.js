@@ -245,6 +245,18 @@ export const accountApi = {
   stopSync: () => api.post('/accounts/stop-sync'),
 
   /**
+   * 补齐缺失字段（发布时间等）
+   * @param {number} id - 账号ID
+   * @param {boolean} force - 是否强制重新采集所有笔记
+   */
+  fixMissing: (id, force = false) => api.post(`/accounts/${id}/fix-missing`, { force }),
+
+  /**
+   * 获取所有博主的缺失字段统计
+   */
+  getMissingStats: () => api.get('/accounts/stats/missing'),
+
+  /**
    * 清空数据库（需要管理员权限）
    */
   reset: () => api.post('/reset', {}, true),

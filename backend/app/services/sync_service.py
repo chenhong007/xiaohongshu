@@ -603,8 +603,10 @@ class SyncService:
                         # 【关键修复】如果详情获取失败，至少保存列表页的基本数据
                         # 这样封面等信息能从列表页获取，不会完全为空
                         if not detail_saved:
+                            # 【重要警告】详情获取失败意味着该笔记将缺少：发布时间、收藏数、评论数、转发数
+                            logger.warning(f"[深度同步] 笔记 {note_id} 详情获取失败，将缺少发布时间等字段！原因: {'限流' if rate_limited else '其他'}")
                             try:
-                                logger.info(f"Saving note {note_id} with list data as fallback")
+                                logger.info(f"Saving note {note_id} with list data as fallback (无发布时间)")
                                 # 传入笔记级别的xsec_token以便存储
                                 cleaned_data = handle_note_info(simple_note, from_list=True, xsec_token=note_xsec_token)
                                 # 列表页数据，不下载完整媒体（因为没有详情），但封面可以获取
