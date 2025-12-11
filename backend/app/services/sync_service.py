@@ -52,6 +52,51 @@ class SyncService:
         SyncService._stop_event.set()
 
     @staticmethod
+    def _is_media_missing(note):
+        """检查笔记的媒体资源是否缺失"""
+        if not note:
+            return True
+            
+        try:
+            # 1. 检查封面
+            if not note.cover_local:
+                return True
+            cover_path = os.path.join(Config.MEDIA_PATH, os.path.basename(note.cover_local))
+            if not os.path.exists(cover_path) or os.path.getsize(cover_path) < 1024:
+                return True
+                
+            # 2. 检查图集/视频目录
+            note_dir = os.path.join(Config.MEDIA_PATH, str(note.note_id))
+            if not os.path.exists(note_dir):
+                # 如果没有目录，肯定缺失
+                return True
+                
+            # 如果是图集，检查是否有图片
+            if note.type in ['图集', 'normal']:
+                try:
+                    img_list = json.loads(note.image_list) if note.image_list else []
+                    if len(img_list) > 0:
+                        # 简单检查：目录下文件数量是否匹配（或至少有文件）
+                        # 严格检查太耗时，这里只要目录下有jpg文件就算有
+                        files = [f for f in os.listdir(note_dir) if f.endswith('.jpg') and os.path.getsize(os.path.join(note_dir, f)) > 1024]
+                        if len(files) == 0:
+                            return True
+                except:
+                    pass
+            
+            # 如果是视频，检查是否有视频文件
+            if note.type == '视频':
+                video_path = os.path.join(note_dir, 'video.mp4')
+                if not os.path.exists(video_path) or os.path.getsize(video_path) < 1024:
+                    return True
+                    
+        except Exception as e:
+            logger.warning(f"Error checking media for note {note.note_id}: {e}")
+            return True
+            
+        return False
+
+    @staticmethod
     def _handle_auth_error(msg):
         """检查错误信息是否为认证错误,如果是则标记Cookie失效"""
         auth_errors = ['未登录', '登录已过期', '需要登录', '401', '403', 'Unauthorized']
@@ -72,7 +117,49 @@ class SyncService:
         return False
 
     @staticmethod
-    def _sleep_with_jitter(sync_mode):
+    def _is_media_missing(note):
+        """检查笔记的媒体资源是否缺失"""
+        if not note:
+            return True
+            
+        try:
+            # 1. 检查封面
+            if not note.cover_local:
+                return True
+            cover_path = os.path.join(Config.MEDIA_PATH, os.path.basename(note.cover_local))
+            if not os.path.exists(cover_path) or os.path.getsize(cover_path) < 1024:
+                return True
+                
+            # 2. 检查图集/视频目录
+            note_dir = os.path.join(Config.MEDIA_PATH, str(note.note_id))
+            if not os.path.exists(note_dir):
+                # 如果没有目录，肯定缺失
+                return True
+                
+            # 如果是图集，检查是否有图片
+            if note.type in ['图集', 'normal']:
+                try:
+                    img_list = json.loads(note.image_list) if note.image_list else []
+                    if len(img_list) > 0:
+                        # 简单检查：目录下文件数量是否匹配（或至少有文件）
+                        # 严格检查太耗时，这里只要目录下有jpg文件就算有
+                        files = [f for f in os.listdir(note_dir) if f.endswith('.jpg') and os.path.getsize(os.path.join(note_dir, f)) > 1024]
+                        if len(files) == 0:
+                            return True
+                except:
+                    pass
+            
+            # 如果是视频，检查是否有视频文件
+            if note.type == '视频':
+                video_path = os.path.join(note_dir, 'video.mp4')
+                if not os.path.exists(video_path) or os.path.getsize(video_path) < 1024:
+                    return True
+                    
+        except Exception as e:
+            logger.warning(f"Error checking media for note {note.note_id}: {e}")
+            return True
+            
+        return False
         """深度同步时增加随机间隔，降低爬虫特征"""
         if sync_mode != 'deep':
             return
@@ -176,6 +263,8 @@ class SyncService:
                 # 更新状态为处理中,清除之前的错误信息
                 account.status = 'processing'
                 account.progress = 0
+                # 在开始同步时立即重置已采集数，避免前端轮询时显示旧数据
+                account.loaded_msgs = 0
                 account.error_message = None
                 db.session.commit()
                 
@@ -371,6 +460,11 @@ class SyncService:
                             if not need_fetch_detail and (not existing_note.cover_remote or existing_note.cover_remote == ''):
                                 need_fetch_detail = True
                                 logger.info(f"Note {note_id} missing cover_remote, will fetch detail")
+                            
+                            # 【新增】强制检查本地媒体资源是否存在
+                            if not need_fetch_detail and SyncService._is_media_missing(existing_note):
+                                need_fetch_detail = True
+                                logger.info(f"Note {note_id} missing local media files, will fetch detail and redownload")
                     else:
                         # 方案A:极速同步
                         # 永远只使用列表页数据,不获取详情
