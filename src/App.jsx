@@ -5,6 +5,14 @@ import { ContentArea } from './components/ContentArea';
 import { DownloadPage } from './components/DownloadPage';
 import { searchApi, accountApi } from './services';
 
+// SSE 日志颜色映射
+const LOG_COLORS = {
+  info: 'color: #3B82F6; font-weight: bold;',
+  warn: 'color: #F59E0B; font-weight: bold;',
+  error: 'color: #EF4444; font-weight: bold;',
+  debug: 'color: #6B7280;',
+};
+
 function App() {
   const [searchTerm, setSearchTerm] = useState('');
   const [isSearchVisible, setIsSearchVisible] = useState(false);
@@ -15,6 +23,9 @@ function App() {
   const [accountsLoading, setAccountsLoading] = useState(false);
   const [accountsError, setAccountsError] = useState(null);
   const accountsLoadedRef = useRef(false);  // 标记是否已加载过
+  
+  // SSE 连接引用
+  const eventSourceRef = useRef(null);
 
   // 获取账号列表
   const fetchAccounts = useCallback(async (silent = false) => {
@@ -77,6 +88,65 @@ function App() {
       fetchAccounts(true);
     }
   }, [refreshTrigger]);
+
+  // ========== SSE 实时日志连接 ==========
+  useEffect(() => {
+    const isProcessing = accounts.some(acc => acc.status === 'processing' || acc.status === 'pending');
+    
+    if (isProcessing && !eventSourceRef.current) {
+      // 有账号正在同步，连接 SSE
+      const apiBase = import.meta.env.VITE_API_BASE_URL || '';
+      const sseUrl = `${apiBase}/api/sync-logs/stream`;
+      
+      console.log('%c[同步日志] 连接实时日志流...', 'color: #10B981; font-weight: bold;');
+      
+      const eventSource = new EventSource(sseUrl);
+      eventSourceRef.current = eventSource;
+      
+      eventSource.onmessage = (event) => {
+        try {
+          const log = JSON.parse(event.data);
+          const level = log.level || 'info';
+          const style = LOG_COLORS[level] || LOG_COLORS.info;
+          const prefix = level === 'error' ? '❌' : level === 'warn' ? '⚠️' : level === 'info' ? 'ℹ️' : '🔍';
+          
+          // 构建日志消息
+          let msg = `${prefix} [${log.account_name || '系统'}] ${log.message}`;
+          if (log.note_id) {
+            msg += ` (笔记: ${log.note_id})`;
+          }
+          
+          console.log(`%c[同步日志] ${msg}`, style);
+          
+          // 如果有额外信息，也输出
+          if (log.extra && Object.keys(log.extra).length > 0) {
+            console.log('  详情:', log.extra);
+          }
+        } catch (e) {
+          // 忽略解析错误（如心跳包）
+        }
+      };
+      
+      eventSource.onerror = (error) => {
+        console.log('%c[同步日志] 连接断开，将在下次同步时重连', 'color: #6B7280;');
+        eventSource.close();
+        eventSourceRef.current = null;
+      };
+    } else if (!isProcessing && eventSourceRef.current) {
+      // 没有账号在同步，关闭 SSE 连接
+      console.log('%c[同步日志] 同步完成，断开日志流', 'color: #10B981; font-weight: bold;');
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
+    
+    // 清理函数
+    return () => {
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+        eventSourceRef.current = null;
+      }
+    };
+  }, [accounts]);
 
   // 搜索用户
   const handleSearchUsers = useCallback(async (query) => {

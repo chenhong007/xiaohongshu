@@ -721,6 +721,12 @@ class SyncService:
                             
                             if is_unavailable:
                                 logger.warning(f"Note {note_id} unavailable: {msg}")
+                                sync_log_broadcaster.warn(
+                                    f"笔记暂时无法浏览: {msg}",
+                                    account_id=acc_id,
+                                    account_name=account_name,
+                                    note_id=note_id
+                                )
                                 # 记录笔记不可用日志
                                 if sync_log:
                                     sync_log.add_issue(
@@ -735,6 +741,12 @@ class SyncService:
                                 if SyncService._handle_auth_error(msg):
                                     logger.info(f"Auth error during note detail fetch: {msg}")
                                     auth_error_msg = f"Cookie已失效,同步终止。错误: {msg}"
+                                    sync_log_broadcaster.error(
+                                        f"Cookie 已失效，同步终止: {msg}",
+                                        account_id=acc_id,
+                                        account_name=account_name,
+                                        note_id=note_id
+                                    )
                                     # 记录认证错误日志
                                     if sync_log:
                                         sync_log.add_issue(
@@ -750,6 +762,12 @@ class SyncService:
                                     SyncService._mark_accounts_failed(remaining_ids, auth_error_msg)
                                     break
                                 elif SyncService._is_xsec_token_error(msg):
+                                    sync_log_broadcaster.warn(
+                                        f"xsec_token 失效，尝试刷新",
+                                        account_id=acc_id,
+                                        account_name=account_name,
+                                        note_id=note_id
+                                    )
                                     # 记录Token刷新日志
                                     if sync_log:
                                         sync_log.add_issue(
@@ -766,6 +784,12 @@ class SyncService:
                                 else:
                                     # 非认证错误，记录日志
                                     logger.warning(f"Failed to get note detail for {note_id}: {msg}")
+                                    sync_log_broadcaster.error(
+                                        f"获取笔记详情失败: {msg}",
+                                        account_id=acc_id,
+                                        account_name=account_name,
+                                        note_id=note_id
+                                    )
                                     # 记录获取失败日志
                                     if sync_log:
                                         sync_log.add_issue(
@@ -779,11 +803,25 @@ class SyncService:
                                 try:
                                     # 安全访问嵌套数据,防止NoneType错误
                                     data = note_detail.get('data')
+                                    
+                                    # 【调试日志】打印 API 返回的完整结构
+                                    logger.info(f"[深度同步调试] note_id={note_id}, API返回 data keys: {list(data.keys()) if data else 'None'}")
+                                    
                                     if data and data.get('items') and len(data['items']) > 0:
                                         note_data = data['items'][0]
+                                        
+                                        # 【调试日志】打印 note_card 的关键字段
+                                        note_card = note_data.get('note_card', {})
+                                        logger.info(f"[深度同步调试] note_id={note_id}, note_card keys: {list(note_card.keys())}")
+                                        logger.info(f"[深度同步调试] note_id={note_id}, note_card.time={note_card.get('time')}, interact_info={note_card.get('interact_info')}")
+                                        
                                         note_data['url'] = note_url
                                         # 传入笔记级别的xsec_token以便存储
                                         cleaned_data = handle_note_info(note_data, from_list=False, xsec_token=note_xsec_token)
+                                        
+                                        # 【调试日志】打印清洗后的关键字段
+                                        logger.info(f"[深度同步调试] note_id={note_id}, cleaned_data: upload_time={cleaned_data.get('upload_time')}, collected_count={cleaned_data.get('collected_count')}, comment_count={cleaned_data.get('comment_count')}")
+                                        
                                         # 深度同步获取详情后，下载所有媒体资源
                                         SyncService._save_note(cleaned_data, download_media=True)
                                         detail_saved = True
@@ -893,12 +931,36 @@ class SyncService:
                         issues_count = summary.get('rate_limited', 0) + summary.get('missing_field', 0) + summary.get('fetch_failed', 0)
                         if issues_count > 0:
                             account.error_message = f"同步完成，但有 {issues_count} 个问题: 限流{summary.get('rate_limited', 0)}次, 字段缺失{summary.get('missing_field', 0)}条, 获取失败{summary.get('fetch_failed', 0)}条"
+                            sync_log_broadcaster.warn(
+                                f"同步完成，但有 {issues_count} 个问题",
+                                account_id=acc_id,
+                                account_name=account_name,
+                                extra=summary
+                            )
+                        else:
+                            sync_log_broadcaster.info(
+                                f"同步完成，共处理 {total} 篇笔记",
+                                account_id=acc_id,
+                                account_name=account_name
+                            )
+                    else:
+                        # 极速模式完成
+                        sync_log_broadcaster.info(
+                            f"同步完成，共处理 {total} 篇笔记",
+                            account_id=acc_id,
+                            account_name=account_name
+                        )
                 else:
                     # 如果是因为停止而退出循环,且状态仍为processing
                     if account.status == 'processing':
                         account.status = 'failed'
                         mode_name = '深度同步' if sync_mode == 'deep' else '极速同步'
                         account.error_message = account.error_message or f"用户手动停止{mode_name}"
+                        sync_log_broadcaster.warn(
+                            f"用户手动停止同步",
+                            account_id=acc_id,
+                            account_name=account_name
+                        )
                     # 保存日志
                     if sync_log:
                         sync_log.save_to_db()
@@ -907,6 +969,11 @@ class SyncService:
                 
             except Exception as e:
                 logger.info(f"Error syncing account {acc_id}: {e}")
+                sync_log_broadcaster.error(
+                    f"同步异常: {str(e)}",
+                    account_id=acc_id,
+                    account_name=locals().get('account_name')
+                )
                 # 先回滚session,避免PendingRollbackError
                 db.session.rollback()
                 try:

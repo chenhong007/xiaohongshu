@@ -237,7 +237,17 @@ def handle_note_info(data, from_list=False, xsec_token=None):
             tags.append(tag['name'])
         except:
             pass
-    upload_time = timestamp_to_str(data['note_card']['time'])
+    
+    # 【调试日志】打印原始 time 字段
+    raw_time = data['note_card'].get('time')
+    logger.info(f"[发布时间调试] note_id={note_id}, raw_time={raw_time}, type={type(raw_time)}")
+    
+    if raw_time:
+        upload_time = timestamp_to_str(raw_time)
+        logger.info(f"[发布时间调试] note_id={note_id}, 转换后 upload_time={upload_time}")
+    else:
+        upload_time = None
+        logger.warning(f"[发布时间调试] note_id={note_id}, time 字段为空！note_card keys={list(data['note_card'].keys())}")
     if 'ip_location' in data['note_card']:
         ip_location = data['note_card']['ip_location']
     else:

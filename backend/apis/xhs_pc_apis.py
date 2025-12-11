@@ -545,9 +545,23 @@ class XHS_Apis():
             response = requests.post(self.base_url + api, headers=headers, data=data, cookies=cookies, proxies=proxies)
             res_json = response.json()
             success, msg = res_json["success"], res_json["msg"]
+            
+            # 【调试日志】打印 API 返回的原始数据结构
+            if success and res_json.get('data') and res_json['data'].get('items'):
+                items = res_json['data']['items']
+                if len(items) > 0:
+                    note_card = items[0].get('note_card', {})
+                    print(f"[API调试] note_id={note_id}, API返回成功")
+                    print(f"[API调试] note_card keys: {list(note_card.keys())}")
+                    print(f"[API调试] note_card.time: {note_card.get('time')}")
+                    print(f"[API调试] note_card.interact_info: {note_card.get('interact_info')}")
+            else:
+                print(f"[API调试] note_id={note_id}, API返回失败或无数据: success={success}, msg={msg}")
+                
         except Exception as e:
             success = False
             msg = str(e)
+            print(f"[API调试] note_id 获取异常: {e}")
         return success, msg, res_json
 
 
