@@ -263,6 +263,26 @@ check_git_clean() {
     return 0  # 干净的工作区
 }
 
+# 自动提交并推送本地更改
+auto_commit_push() {
+    if [ -d ".git" ]; then
+        if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+            log_warn "检测到未提交的本地更改，正在自动提交..."
+            
+            git add .
+            git commit -m "Auto deploy: save local changes $(date '+%Y-%m-%d %H:%M:%S')"
+            
+            log_info "正在推送到远程仓库..."
+            git push origin $(git rev-parse --abbrev-ref HEAD) || {
+                log_warn "Git push 失败，虽然代码已提交到本地仓库，但未能推送到远程。"
+                log_warn "请稍后手动检查 git push。"
+            }
+            
+            log_info "✅ 本地更改已提交"
+        fi
+    fi
+}
+
 # 获取已部署的版本信息
 get_deployed_version() {
     local version_file="${PROJECT_DIR}/.deploy_version"
@@ -483,6 +503,9 @@ cmd_deploy() {
     
     log_step "🚀 开始完整部署"
     
+    # 自动提交并推送更改
+    auto_commit_push
+    
     check_docker
     check_env
     
@@ -518,6 +541,9 @@ cmd_update() {
     else
         log_step "🔄 开始快速更新"
     fi
+    
+    # 自动提交并推送更改
+    auto_commit_push
     
     check_docker
     check_env

@@ -15,6 +15,7 @@ from ..extensions import db
 from ..models import Account, Note, Cookie
 from ..utils.logger import get_logger, log_sync_event
 from ..config import Config
+from xhs_utils.xhs_util import get_common_headers
 
 # 获取日志器
 logger = get_logger('sync')
@@ -422,7 +423,8 @@ class SyncService:
                                     note_data = data['items'][0]
                                     note_data['url'] = note_url
                                     cleaned_data = handle_note_info(note_data, from_list=False)
-                                    SyncService._save_note(cleaned_data)
+                                    # 深度同步获取详情后，下载所有媒体资源
+                                    SyncService._save_note(cleaned_data, download_media=True)
                                 else:
                                     logger.info(f"Note {note_id} has no valid data")
                             except Exception as e:
@@ -479,7 +481,65 @@ class SyncService:
                     db.session.rollback()
     
     @staticmethod
-    def _save_note(note_data):
+    def _download_all_media(note_id, note_data):
+        """下载笔记的所有媒体资源（图片/视频）到本地归档"""
+        try:
+            # 创建笔记专属目录
+            note_dir = os.path.join(Config.MEDIA_PATH, str(note_id))
+            if not os.path.exists(note_dir):
+                os.makedirs(note_dir)
+            
+            headers = get_common_headers()
+            downloaded_count = 0
+            
+            # 1. 下载图片列表
+            if note_data.get('image_list'):
+                for idx, img_url in enumerate(note_data['image_list']):
+                    # 处理URL，尝试获取无水印版本（如果之前没有处理过）
+                    # 这里假设传入的URL已经是最佳URL
+                    
+                    ext = '.jpg'
+                    filename = f"image_{idx}{ext}"
+                    filepath = os.path.join(note_dir, filename)
+                    
+                    if os.path.exists(filepath) and os.path.getsize(filepath) > 1024:
+                        continue
+                        
+                    try:
+                        resp = requests.get(img_url, headers=headers, stream=True, timeout=20)
+                        if resp.status_code == 200:
+                            with open(filepath, 'wb') as f:
+                                for chunk in resp.iter_content(8192):
+                                    f.write(chunk)
+                            downloaded_count += 1
+                        else:
+                            logger.warning(f"Failed to download image {idx} for {note_id}: {resp.status_code}")
+                    except Exception as e:
+                        logger.warning(f"Error downloading image {idx} for {note_id}: {e}")
+            
+            # 2. 下载视频
+            if note_data.get('note_type') == '视频' and note_data.get('video_addr'):
+                video_url = note_data['video_addr']
+                filename = f"video.mp4"
+                filepath = os.path.join(note_dir, filename)
+                
+                if not (os.path.exists(filepath) and os.path.getsize(filepath) > 1024):
+                    try:
+                        resp = requests.get(video_url, headers=headers, stream=True, timeout=60)
+                        if resp.status_code == 200:
+                            with open(filepath, 'wb') as f:
+                                for chunk in resp.iter_content(1024*1024): # 1MB chunks
+                                    f.write(chunk)
+                            downloaded_count += 1
+                            logger.info(f"Successfully downloaded video for {note_id}")
+                    except Exception as e:
+                        logger.warning(f"Error downloading video for {note_id}: {e}")
+
+            if downloaded_count > 0:
+                logger.info(f"Archived {downloaded_count} media files for note {note_id}")
+                
+        except Exception as e:
+            logger.error(f"Error in _download_all_media for {note_id}: {e}")
         """保存笔记到数据库（使用merge避免重复插入）
         
         【重要说明】
@@ -580,6 +640,11 @@ class SyncService:
                 db.session.add(note)
             
             db.session.commit()
+            
+            # 如果请求全量下载媒体资源
+            if download_media:
+                SyncService._download_all_media(note_id, note_data)
+                
         except Exception as e:
             # 发生异常时回滚session,避免PendingRollbackError
             db.session.rollback()
@@ -600,19 +665,32 @@ class SyncService:
                 ext = '.jpg'
             filename = f"{note_id}_cover{ext}"
             filepath = os.path.join(Config.MEDIA_PATH, filename)
-            # 已存在则直接复用
-            if os.path.exists(filepath) and os.path.getsize(filepath) > 0:
+            
+            # 检查文件是否存在且大小正常（>1KB）
+            if os.path.exists(filepath) and os.path.getsize(filepath) > 1024:
                 return f"/api/media/{filename}"
             
-            resp = requests.get(remote_url, stream=True, timeout=10)
-            if resp.status_code == 200:
-                with open(filepath, 'wb') as f:
-                    for chunk in resp.iter_content(8192):
-                        if chunk:
-                            f.write(chunk)
-                return f"/api/media/{filename}"
-            else:
-                logger.info(f"Download cover failed ({resp.status_code}) for {note_id}")
+            headers = get_common_headers()
+            # 增加重试机制
+            for attempt in range(3):
+                try:
+                    resp = requests.get(remote_url, headers=headers, stream=True, timeout=15)
+                    if resp.status_code == 200:
+                        with open(filepath, 'wb') as f:
+                            for chunk in resp.iter_content(8192):
+                                if chunk:
+                                    f.write(chunk)
+                        logger.info(f"Successfully downloaded cover for {note_id}")
+                        return f"/api/media/{filename}"
+                    elif resp.status_code == 403:
+                        logger.warning(f"Download cover 403 Forbidden for {note_id}, attempt {attempt+1}")
+                        time.sleep(1)
+                    else:
+                        logger.warning(f"Download cover failed ({resp.status_code}) for {note_id}")
+                except Exception as dl_err:
+                    logger.warning(f"Download attempt {attempt+1} failed: {dl_err}")
+                    time.sleep(1)
+                    
         except Exception as e:
-            logger.info(f"Download cover error for {note_id}: {e}")
+            logger.error(f"Download cover error for {note_id}: {e}")
         return None
