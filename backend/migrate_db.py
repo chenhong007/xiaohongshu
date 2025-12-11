@@ -141,6 +141,9 @@ def migrate():
                     'video_addr': 'VARCHAR(512)',
                     'tags': 'TEXT',
                     'ip_location': 'VARCHAR(64)',
+                    # 【关键】封面预览字段 - 必须添加以支持图片预览功能
+                    'cover_remote': 'VARCHAR(512)',
+                    'cover_local': 'VARCHAR(512)',
                 }
                 
                 for column_name, column_type in notes_columns.items():

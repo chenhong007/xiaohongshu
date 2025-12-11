@@ -364,6 +364,12 @@ class SyncService:
                             if not need_fetch_detail and (not existing_note.upload_time or existing_note.upload_time == ''):
                                 need_fetch_detail = True
                                 logger.info(f"Note {note_id} missing upload_time, will fetch detail")
+                            
+                            # 【关键修复】检查是否缺少封面数据（cover_remote 和 cover_local）
+                            # 这两个字段是数据库新增的，旧数据可能缺失
+                            if not need_fetch_detail and (not existing_note.cover_remote or existing_note.cover_remote == ''):
+                                need_fetch_detail = True
+                                logger.info(f"Note {note_id} missing cover_remote, will fetch detail")
                     else:
                         # 方案A:极速同步
                         # 永远只使用列表页数据,不获取详情
