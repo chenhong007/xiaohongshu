@@ -256,6 +256,9 @@ def sync_all():
 @accounts_bp.route('/accounts/stop-sync', methods=['POST'])
 def stop_sync():
     """停止同步任务"""
+    # 获取当前同步模式
+    mode_name = '深度同步' if SyncService._current_sync_mode == 'deep' else '极速同步'
+    
     SyncService.stop_sync()
     
     # 将正在执行或等待执行的任务全部标记为停止，避免前端一直显示“准备中”
@@ -263,7 +266,7 @@ def stop_sync():
         {
             'status': 'failed',
             'progress': 0,
-            'error_message': '用户手动停止同步'
+            'error_message': f'用户手动停止{mode_name}'
         },
         synchronize_session=False
     )
