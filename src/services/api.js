@@ -54,6 +54,7 @@ class ApiService {
    */
   async request(endpoint, options = {}, requireAdmin = false) {
     const url = `${BASE_URL}${endpoint}`;
+    const isSyncRequest = endpoint.includes('sync');
     
     const headers = {
       'Content-Type': 'application/json',
@@ -85,17 +86,46 @@ class ApiService {
       }
     }
 
+    // 同步相关请求添加调试日志
+    if (isSyncRequest) {
+      console.log('[API调试] 发送同步请求:', {
+        url: finalUrl,
+        method: options.method || 'GET',
+        body: options.body ? JSON.parse(options.body) : null
+      });
+    }
+
     try {
       const response = await fetch(finalUrl, config);
       
       // 解析响应
       const data = await response.json();
       
+      // 同步相关请求添加调试日志
+      if (isSyncRequest) {
+        console.log('[API调试] 同步请求响应:', {
+          url: finalUrl,
+          status: response.status,
+          ok: response.ok,
+          data: data
+        });
+      }
+      
       if (!response.ok) {
         // 新的错误响应格式
         const errorMessage = data.error?.message || data.message || data.error || '请求失败';
         const errorCode = data.error?.code || 'UNKNOWN';
         const error = new ApiError(errorMessage, response.status, data, errorCode);
+        
+        if (isSyncRequest) {
+          console.error('[API调试] 同步请求失败:', {
+            url: finalUrl,
+            errorMessage,
+            errorCode,
+            status: response.status,
+            fullData: data
+          });
+        }
         
         // 检测是否是 Cookie 失效相关错误
         if (this.isCookieInvalidError(error, data)) {
@@ -115,6 +145,9 @@ class ApiService {
     } catch (error) {
       if (error instanceof ApiError) {
         throw error;
+      }
+      if (isSyncRequest) {
+        console.error('[API调试] 同步请求网络错误:', error);
       }
       throw new ApiError(error.message || '网络错误', 0);
     }

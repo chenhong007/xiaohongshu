@@ -2,6 +2,54 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Search, RefreshCw, ChevronDown, Coffee, Download as DownloadIcon, Play, Image, Video, ExternalLink, Trash2, X, Check, Calendar, Heart, Star, MessageCircle, RotateCcw, Share2, Copy, CheckCircle, Settings2, ChevronLeft, ChevronRight, Eye, EyeOff } from 'lucide-react';
 import { noteApi, accountApi } from '../services';
 
+// 图片预览组件 - 使用 state 跟踪有效的图片 URL，确保小图和悬浮大图使用相同的源
+const PreviewImage = ({ previewSrc, remoteSrc, imageList }) => {
+  const [validSrc, setValidSrc] = useState(previewSrc);
+  const [loadFailed, setLoadFailed] = useState(false);
+
+  // 当 previewSrc 变化时重置状态
+  useEffect(() => {
+    setValidSrc(previewSrc);
+    setLoadFailed(false);
+  }, [previewSrc]);
+
+  const handleError = () => {
+    const fallback = remoteSrc || (imageList && imageList[0]);
+    if (fallback && validSrc !== fallback) {
+      setValidSrc(fallback);
+    } else {
+      setLoadFailed(true);
+    }
+  };
+
+  if (!previewSrc) {
+    return <span className="text-gray-400 text-xs">无图</span>;
+  }
+
+  if (loadFailed) {
+    return <span className="text-gray-400 text-xs">加载失败</span>;
+  }
+
+  return (
+    <div className="group relative inline-block">
+      <img
+        src={validSrc}
+        alt="封面"
+        className="w-12 h-12 rounded object-cover border border-gray-200"
+        onError={handleError}
+      />
+      <div className="hidden group-hover:block absolute left-14 top-1/2 -translate-y-1/2 z-50 bg-white border border-gray-200 rounded shadow-lg p-2">
+        <img
+          src={validSrc}
+          alt="预览大图"
+          className="w-64 h-64 object-contain rounded"
+          onError={handleError}
+        />
+      </div>
+    </div>
+  );
+};
+
 export const DownloadPage = () => {
   // 数据状态
   const [notes, setNotes] = useState([]);
@@ -763,41 +811,11 @@ export const DownloadPage = () => {
                     )}
                     {visibleColumns.preview && (
                       <td className="p-4">
-                        {previewSrc ? (
-                          <div className="group relative inline-block">
-                            <img
-                              src={previewSrc}
-                              alt="封面"
-                              className="w-12 h-12 rounded object-cover border border-gray-200"
-                              onError={(e) => {
-                                // 如果本地图片加载失败，尝试使用远程图片
-                                const fallback = remoteSrc || (note.image_list && note.image_list[0]);
-                                if (fallback && e.target.src !== fallback) {
-                                  e.target.src = fallback;
-                                } else {
-                                  // 远程也失败，显示占位图
-                                  e.target.style.display = 'none';
-                                  e.target.parentElement.innerHTML = '<span class="text-gray-400 text-xs">加载失败</span>';
-                                }
-                              }}
-                            />
-                            <div className="hidden group-hover:block absolute left-14 top-1/2 -translate-y-1/2 z-50 bg-white border border-gray-200 rounded shadow-lg p-2">
-                              <img
-                                src={previewSrc}
-                                alt="预览大图"
-                                className="w-64 h-64 object-contain rounded"
-                                onError={(e) => {
-                                  const fallback = remoteSrc || (note.image_list && note.image_list[0]);
-                                  if (fallback && e.target.src !== fallback) {
-                                    e.target.src = fallback;
-                                  }
-                                }}
-                              />
-                            </div>
-                          </div>
-                        ) : (
-                          <span className="text-gray-400 text-xs">无图</span>
-                        )}
+                        <PreviewImage 
+                          previewSrc={previewSrc} 
+                          remoteSrc={remoteSrc} 
+                          imageList={note.image_list} 
+                        />
                       </td>
                     )}
                     {visibleColumns.remoteUrl && (

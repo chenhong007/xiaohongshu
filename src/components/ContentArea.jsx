@@ -71,10 +71,21 @@ export const ContentArea = ({
 
   // 轮询更新处理中的账号状态
   useEffect(() => {
-    const isProcessing = accounts.some(acc => acc.status === 'processing' || acc.status === 'pending');
+    const processingAccounts = accounts.filter(acc => acc.status === 'processing' || acc.status === 'pending');
+    const isProcessing = processingAccounts.length > 0;
+    
     if (isProcessing) {
-      const timer = setInterval(() => fetchAccounts(true), 2000);
-      return () => clearInterval(timer);
+      console.log('[同步调试] 检测到正在处理的账号，启动轮询:', processingAccounts.map(acc => ({
+        id: acc.id, name: acc.name, status: acc.status, progress: acc.progress
+      })));
+      const timer = setInterval(() => {
+        console.log('[同步调试] 轮询刷新账号列表...');
+        fetchAccounts(true);
+      }, 2000);
+      return () => {
+        console.log('[同步调试] 停止轮询');
+        clearInterval(timer);
+      };
     }
   }, [accounts, fetchAccounts]);
 
@@ -133,6 +144,7 @@ export const ContentArea = ({
 
   // 更新本地账号状态（乐观更新）
   const updateLocalAccountsStatus = (ids, status, progress = 0) => {
+    console.log('[同步调试] 更新账号状态:', { ids, status, progress });
     const idSet = new Set(ids);
     setAccounts(prev => prev.map(acc => {
       if (idSet.has(acc.id)) {
@@ -141,6 +153,7 @@ export const ContentArea = ({
         if (status === 'processing') {
           updates.loaded_msgs = 0;
         }
+        console.log('[同步调试] 账号状态变更:', { id: acc.id, name: acc.name, 旧状态: acc.status, 新状态: status });
         return { ...acc, ...updates };
       }
       return acc;
@@ -149,15 +162,27 @@ export const ContentArea = ({
 
   // 同步单个账号
   const handleSync = async (accountId, mode = 'fast') => {
+    const modeLabel = mode === 'fast' ? '极速同步' : '深度同步';
+    console.log(`[同步调试] ========== 单个账号${modeLabel}开始 ==========`);
+    console.log(`[同步调试] 账号ID: ${accountId}, 模式: ${mode}`);
+    
     // 乐观更新
     updateLocalAccountsStatus([accountId], 'processing', 0);
     
     try {
-      await accountApi.sync(accountId, mode);
+      console.log(`[同步调试] 发送API请求: POST /accounts/${accountId}/sync`, { mode });
+      const result = await accountApi.sync(accountId, mode);
+      console.log(`[同步调试] API响应成功:`, result);
       // 减少等待时间，因为我们已经乐观更新了状态
       setTimeout(fetchAccounts, 200);
     } catch (err) {
-      console.error('Sync failed:', err);
+      console.error(`[同步调试] ${modeLabel}失败:`, err);
+      console.error('[同步调试] 错误详情:', {
+        message: err.message,
+        status: err.status,
+        errorCode: err.errorCode,
+        data: err.data
+      });
       setError('同步失败');
       // 失败后恢复状态或重新获取
       fetchAccounts();
@@ -166,39 +191,57 @@ export const ContentArea = ({
 
   // 批量同步
   const handleBatchSync = async (mode = 'fast') => {
+    const modeLabel = mode === 'fast' ? '极速同步' : '深度同步';
+    console.log(`[同步调试] ========== 批量${modeLabel}开始 ==========`);
+    console.log('[同步调试] 当前选中的账号IDs:', Array.from(selectedIds));
+    console.log('[同步调试] 选中数量:', selectedIds.size);
+    
     // 强制使用 Set 来过滤重复 ID，确保只同步选中的账号
     const idsToSync = selectedIds.size > 0 ? Array.from(selectedIds) : [];
     
     // 如果没有选中任何账号，则询问是否同步全部（这里修改逻辑：如果没有选中，则不做任何操作或者提示用户）
     // 为了防止误操作导致同步所有账号，我们这里强制要求必须选中账号
-    // 如果需要同步全部，请使用单独的“同步全部”按钮
+    // 如果需要同步全部，请使用单独的"同步全部"按钮
     
     if (idsToSync.length === 0) {
+        console.log('[同步调试] 未选中账号，询问是否同步全部');
         // 原逻辑是如果没有选中，则同步全部，这可能导致用户疑惑
         // 修改为：如果没选中，则提示用户，或者调用 handleSyncAll 但必须有明确意图
-        // 鉴于用户反馈“只点了一行”，这里可能是前端逻辑问题
+        // 鉴于用户反馈"只点了一行"，这里可能是前端逻辑问题
         // 如果是单行操作，不应该走 handleBatchSync，而是 handleSync
         // 检查调用处：如果是单行按钮，调用的是 handleSync(account.id)
         // 如果是顶部按钮，调用 handleBatchSync
-        // 顶部按钮逻辑：如果 selectedIds 为空，之前的逻辑是 syncAll，这确实会导致“没选中任何行”时点击“批量同步”变成“同步全部”
+        // 顶部按钮逻辑：如果 selectedIds 为空，之前的逻辑是 syncAll，这确实会导致"没选中任何行"时点击"批量同步"变成"同步全部"
         // 让我们修正这个行为：如果没有选中，则什么都不做，或者 alert 提示
         if (!confirm('您未选中任何账号。是否要同步所有账号？')) {
+            console.log('[同步调试] 用户取消同步全部');
             return;
         }
+        console.log('[同步调试] 用户确认同步全部，转到 handleSyncAll');
         return handleSyncAll(mode);
     }
+    
+    console.log('[同步调试] 准备同步的账号IDs:', idsToSync);
     
     // 乐观更新
     updateLocalAccountsStatus(idsToSync, 'processing', 0);
     setLoading(true);
     
     try {
-      await accountApi.batchSync(idsToSync, mode);
+      console.log('[同步调试] 发送API请求: POST /accounts/sync-batch', { ids: idsToSync, mode });
+      const result = await accountApi.batchSync(idsToSync, mode);
+      console.log('[同步调试] 批量同步API响应成功:', result);
       // 清空选择，避免误操作
       setSelectedIds(new Set());
       setTimeout(fetchAccounts, 500);
     } catch (err) {
-      console.error('Batch sync failed:', err);
+      console.error(`[同步调试] 批量${modeLabel}失败:`, err);
+      console.error('[同步调试] 错误详情:', {
+        message: err.message,
+        status: err.status,
+        errorCode: err.errorCode,
+        data: err.data
+      });
       setError('批量同步失败');
       fetchAccounts();
     } finally {
@@ -208,16 +251,29 @@ export const ContentArea = ({
 
   // 同步全部
   const handleSyncAll = async (mode = 'fast') => {
+    const modeLabel = mode === 'fast' ? '极速同步' : '深度同步';
+    console.log(`[同步调试] ========== 同步全部(${modeLabel})开始 ==========`);
+    console.log('[同步调试] 当前账号列表:', accounts.map(acc => ({ id: acc.id, name: acc.name, status: acc.status })));
+    
     // 乐观更新所有账号
     const allIds = accounts.map(acc => acc.id);
+    console.log('[同步调试] 全部账号IDs:', allIds);
     updateLocalAccountsStatus(allIds, 'processing', 0);
     setLoading(true);
     
     try {
-      await accountApi.syncAll(mode);
+      console.log('[同步调试] 发送API请求: POST /accounts/sync-all', { mode });
+      const result = await accountApi.syncAll(mode);
+      console.log('[同步调试] 同步全部API响应成功:', result);
       setTimeout(fetchAccounts, 500);
     } catch (err) {
-      console.error('Sync all failed:', err);
+      console.error(`[同步调试] 同步全部(${modeLabel})失败:`, err);
+      console.error('[同步调试] 错误详情:', {
+        message: err.message,
+        status: err.status,
+        errorCode: err.errorCode,
+        data: err.data
+      });
       setError('同步失败');
       fetchAccounts();
     } finally {
@@ -227,15 +283,18 @@ export const ContentArea = ({
 
   // 停止同步
   const handleStopSync = async () => {
+    console.log('[同步调试] ========== 停止同步请求 ==========');
     if (!confirm('确定要停止当前正在进行的同步任务吗？')) return;
     
     try {
-      await accountApi.stopSync();
+      console.log('[同步调试] 发送API请求: POST /accounts/stop-sync');
+      const result = await accountApi.stopSync();
+      console.log('[同步调试] 停止同步成功:', result);
       setError(null);
       // 立即刷新一次状态，并在之后继续轮询
       setTimeout(fetchAccounts, 500);
     } catch (err) {
-      console.error('Stop sync failed:', err);
+      console.error('[同步调试] 停止同步失败:', err);
       setError('停止同步失败');
     }
   };

@@ -18,6 +18,8 @@ function App() {
 
   // 获取账号列表
   const fetchAccounts = useCallback(async (silent = false) => {
+    console.log('[同步调试] fetchAccounts 被调用, silent:', silent);
+    
     // 如果已有缓存数据，静默刷新（不显示 loading）
     if (!silent && accounts.length === 0) {
       setAccountsLoading(true);
@@ -26,10 +28,24 @@ function App() {
     
     try {
       const data = await accountApi.getAll();
-      setAccounts(Array.isArray(data) ? data : []);
+      const accountsData = Array.isArray(data) ? data : [];
+      
+      // 打印账号状态变化
+      const statusSummary = accountsData.reduce((acc, a) => {
+        acc[a.status || 'unknown'] = (acc[a.status || 'unknown'] || 0) + 1;
+        return acc;
+      }, {});
+      console.log('[同步调试] 获取到账号列表, 状态统计:', statusSummary);
+      
+      // 打印每个账号的详细状态
+      accountsData.forEach(acc => {
+        console.log(`[同步调试] 账号 ${acc.name || acc.user_id}: 状态=${acc.status}, 进度=${acc.progress}%, 已采集=${acc.loaded_msgs}/${acc.total_msgs}, 错误=${acc.error_message || '无'}`);
+      });
+      
+      setAccounts(accountsData);
       accountsLoadedRef.current = true;
     } catch (err) {
-      console.error('Failed to fetch accounts:', err);
+      console.error('[同步调试] 获取账号列表失败:', err);
       if (!silent && accounts.length === 0) {
         setAccountsError('获取账号列表失败');
       }
