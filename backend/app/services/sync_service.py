@@ -201,13 +201,14 @@ class SyncService:
 
         cfg = current_app.config if current_app else {}
         try:
-            # 【修改】增加默认延迟时间以避免限流
-            min_delay = float(cfg.get('DEEP_SYNC_DELAY_MIN', 2.0))
-            max_delay = float(cfg.get('DEEP_SYNC_DELAY_MAX', 4.0))
-            extra_prob = float(cfg.get('DEEP_SYNC_EXTRA_PAUSE_CHANCE', 0.15))
-            extra_max = float(cfg.get('DEEP_SYNC_EXTRA_PAUSE_MAX', 5.0))
+            # 【重要】小红书反爬很严格，默认延迟必须足够长！
+            # 太快会导致全部被限流，详情获取全部失败
+            min_delay = float(cfg.get('DEEP_SYNC_DELAY_MIN', 4.0))
+            max_delay = float(cfg.get('DEEP_SYNC_DELAY_MAX', 8.0))
+            extra_prob = float(cfg.get('DEEP_SYNC_EXTRA_PAUSE_CHANCE', 0.20))
+            extra_max = float(cfg.get('DEEP_SYNC_EXTRA_PAUSE_MAX', 15.0))
         except Exception:
-            min_delay, max_delay, extra_prob, extra_max = 2.0, 4.0, 0.15, 5.0
+            min_delay, max_delay, extra_prob, extra_max = 4.0, 8.0, 0.20, 15.0
 
         min_delay = max(0.5, min_delay)
         max_delay = max(min_delay, max_delay)

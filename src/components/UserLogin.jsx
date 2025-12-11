@@ -332,18 +332,18 @@ export const UserLogin = () => {
   const RunTimeDisplay = ({ isRunning }) => {
     if (!runInfo && currentRunSeconds === 0) return null;
     
+    const statusClass = isRunning ? 'text-green-600' : 'text-orange-500';
+    const label = isRunning ? '运行中' : '上次运行';
+    const value = isRunning
+      ? formatDuration(currentRunSeconds)
+      : formatDuration(runInfo?.last_valid_duration || currentRunSeconds);
+    
     return (
-      <div className="text-xs text-gray-500 mt-1 flex items-center gap-1">
+      <div className="flex items-center gap-1 text-xs text-gray-500 whitespace-nowrap">
         <Clock className="w-3 h-3" />
-        {isRunning ? (
-          <span className="text-green-600">
-            运行中: {formatDuration(currentRunSeconds)}
-          </span>
-        ) : (
-          <span className="text-orange-500">
-            上次运行: {formatDuration(runInfo?.last_valid_duration || currentRunSeconds)}
-          </span>
-        )}
+        <span className={statusClass}>
+          {label}: {value}
+        </span>
       </div>
     );
   };
@@ -362,7 +362,7 @@ export const UserLogin = () => {
   if (user) {
     return (
       <div className="flex flex-col gap-2">
-        <div className="flex items-center gap-3">
+        <div className="flex items-start gap-3">
           <div className="w-10 h-10 rounded-full bg-gray-200 overflow-hidden flex-shrink-0">
             {user.avatar ? (
               <img 
@@ -377,26 +377,34 @@ export const UserLogin = () => {
             )}
           </div>
           <div className="flex-1 min-w-0">
-            <p className="text-sm font-medium text-gray-900 truncate">
-              {user.username}
-            </p>
-            <p className="text-xs text-green-500 flex items-center gap-1">
-              <CheckCircle className="w-3 h-3" /> 已连接
-            </p>
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-gray-900 truncate">
+                  {user.username}
+                </p>
+                <p className="mt-0.5 text-xs text-green-500 flex items-center gap-1">
+                  <CheckCircle className="w-3 h-3" /> 已连接
+                </p>
+              </div>
+              <button 
+                onClick={handleLogout}
+                className="text-gray-400 hover:text-gray-600 p-1"
+                title="断开连接"
+              >
+                <LogOut className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        </div>
+        <div className="text-xs text-gray-500 space-y-0.5">
+          <div className="min-h-[18px] flex items-center">
             <RunTimeDisplay isRunning={runInfo?.is_running} />
+          </div>
+          <div className="min-h-[18px] text-gray-400">
             {runInfo?.run_start_time && (
-              <p className="text-xs text-gray-400 mt-0.5">
-                开始于: {formatDateTime(runInfo.run_start_time)}
-              </p>
+              <span>开始于: {formatDateTime(runInfo.run_start_time)}</span>
             )}
           </div>
-          <button 
-            onClick={handleLogout}
-            className="text-gray-400 hover:text-gray-600 p-1"
-            title="断开连接"
-          >
-            <LogOut className="w-4 h-4" />
-          </button>
         </div>
       </div>
     );
