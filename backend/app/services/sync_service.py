@@ -133,6 +133,28 @@ class SyncService:
     
     _stop_event = threading.Event()
     _current_sync_mode = 'fast'  # 当前同步模式: 'fast'=极速同步, 'deep'=深度同步
+    _rate_limit_counter = 0  # 限流计数器
+    _rate_limit_lock = threading.Lock()  # 线程锁
+    
+    @staticmethod
+    def _reset_rate_limit_counter():
+        """重置限流计数器"""
+        with SyncService._rate_limit_lock:
+            SyncService._rate_limit_counter = 0
+    
+    @staticmethod
+    def _record_rate_limit():
+        """记录一次限流事件"""
+        with SyncService._rate_limit_lock:
+            SyncService._rate_limit_counter += 1
+            logger.warning(f"[限流计数] 累计限流次数: {SyncService._rate_limit_counter}")
+    
+    @staticmethod
+    def _record_success():
+        """记录一次成功请求，逐步减少限流计数"""
+        with SyncService._rate_limit_lock:
+            if SyncService._rate_limit_counter > 0:
+                SyncService._rate_limit_counter = max(0, SyncService._rate_limit_counter - 1)
     
     @staticmethod
     def _mark_accounts_failed(account_ids, message):
