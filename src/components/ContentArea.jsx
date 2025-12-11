@@ -176,19 +176,37 @@ export const ContentArea = ({ activeTab, searchTerm, onAddClick, refreshTrigger,
 
   // 批量同步
   const handleBatchSync = async (mode = 'fast') => {
-    if (selectedIds.size === 0) {
-      return handleSyncAll(mode);
+    // 强制使用 Set 来过滤重复 ID，确保只同步选中的账号
+    const idsToSync = selectedIds.size > 0 ? Array.from(selectedIds) : [];
+    
+    // 如果没有选中任何账号，则询问是否同步全部（这里修改逻辑：如果没有选中，则不做任何操作或者提示用户）
+    // 为了防止误操作导致同步所有账号，我们这里强制要求必须选中账号
+    // 如果需要同步全部，请使用单独的“同步全部”按钮
+    
+    if (idsToSync.length === 0) {
+        // 原逻辑是如果没有选中，则同步全部，这可能导致用户疑惑
+        // 修改为：如果没选中，则提示用户，或者调用 handleSyncAll 但必须有明确意图
+        // 鉴于用户反馈“只点了一行”，这里可能是前端逻辑问题
+        // 如果是单行操作，不应该走 handleBatchSync，而是 handleSync
+        // 检查调用处：如果是单行按钮，调用的是 handleSync(account.id)
+        // 如果是顶部按钮，调用 handleBatchSync
+        // 顶部按钮逻辑：如果 selectedIds 为空，之前的逻辑是 syncAll，这确实会导致“没选中任何行”时点击“批量同步”变成“同步全部”
+        // 让我们修正这个行为：如果没有选中，则什么都不做，或者 alert 提示
+        if (!confirm('您未选中任何账号。是否要同步所有账号？')) {
+            return;
+        }
+        return handleSyncAll(mode);
     }
     
-    const idsToSync = Array.from(selectedIds);
     // 乐观更新
     updateLocalAccountsStatus(idsToSync, 'processing', 0);
     setLoading(true);
     
     try {
       await accountApi.batchSync(idsToSync, mode);
-      setTimeout(fetchAccounts, 500);
+      // 清空选择，避免误操作
       setSelectedIds(new Set());
+      setTimeout(fetchAccounts, 500);
     } catch (err) {
       console.error('Batch sync failed:', err);
       setError('批量同步失败');

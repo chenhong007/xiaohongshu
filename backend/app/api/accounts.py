@@ -209,7 +209,7 @@ def sync_batch():
     db.session.commit()
     
     SyncService.start_sync(ids, sync_mode=mode)
-    logger.info(f"开始批量同步 {len(ids)} 个账号，模式: {mode}")
+    logger.info(f"开始批量同步 {len(ids)} 个账号，模式: {mode}，IDs: {ids}")
     
     return success_response(
         data={'count': len(ids)},
