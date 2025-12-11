@@ -1,6 +1,9 @@
 """
 笔记管理 API
 """
+import logging
+import os
+
 from flask import Blueprint, jsonify, request, send_from_directory
 from sqlalchemy import or_
 
@@ -9,11 +12,25 @@ from ..models import Note, Account
 from ..config import Config
 
 notes_bp = Blueprint('notes', __name__)
+logger = logging.getLogger(__name__)
 
 
 @notes_bp.route('/media/<path:filename>', methods=['GET'])
 def get_note_media(filename):
     """提供本地缓存的笔记封面/图片预览"""
+    Config.init_paths()
+    filepath = os.path.join(Config.MEDIA_PATH, filename)
+
+    # 文件缺失时尝试按命名规则回源下载（避免重启/重新部署后封面丢失）
+    if (not os.path.exists(filepath)) or os.path.getsize(filepath) == 0:
+        try:
+            _restore_cover_if_missing(filename)
+        except Exception as e:
+            logger.info(f"Restore media failed for {filename}: {e}")
+
+    if not os.path.exists(filepath):
+        return jsonify({'success': False, 'message': 'media not found'}), 404
+
     return send_from_directory(Config.MEDIA_PATH, filename)
 
 
@@ -266,4 +283,25 @@ def export_notes():
         'data': data,
         'count': len(data)
     })
+
+
+def _restore_cover_if_missing(filename: str) -> bool:
+    """当封面文件缺失时尝试从远程重新下载并刷新数据库路径"""
+    if not filename or '_cover' not in filename:
+        return False
+    try:
+        note = Note.query.filter(Note.cover_local.like(f"%/{filename}")).first()
+        if not note or not note.cover_remote:
+            return False
+        # 延迟导入以避免潜在循环依赖
+        from ..services.sync_service import SyncService
+        cover_local = SyncService._download_cover(note.cover_remote, note.note_id)
+        if cover_local:
+            note.cover_local = cover_local
+            db.session.commit()
+            return True
+    except Exception as e:
+        db.session.rollback()
+        logger.info(f"Restore cover error for {filename}: {e}")
+    return False
 

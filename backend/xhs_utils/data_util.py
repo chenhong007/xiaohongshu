@@ -181,12 +181,16 @@ def handle_note_info(data, from_list=False):
     image_list_temp = data['note_card']['image_list']
     image_list = []
     for image in image_list_temp:
-        try:
-            image_list.append(image['info_list'][1]['url'])
-            # success, msg, img_url = XHS_Apis.get_note_no_water_img(image['info_list'][1]['url'])
-            # image_list.append(img_url)
-        except:
-            pass
+        # 取最清晰可用的 url：优先 info_list 最后一个，其次 url_default/url，避免空列表
+        best_url = None
+        info_list = image.get('info_list') or []
+        if info_list:
+            last_info = info_list[-1] or {}
+            best_url = last_info.get('url')
+        if not best_url:
+            best_url = image.get('url_default') or image.get('url')
+        if best_url:
+            image_list.append(best_url)
     if note_type == '视频':
         video_cover = image_list[0]
         video_addr = 'https://sns-video-bd.xhscdn.com/' + data['note_card']['video']['consumer']['origin_video_key']

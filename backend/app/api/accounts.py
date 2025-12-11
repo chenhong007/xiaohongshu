@@ -258,9 +258,13 @@ def stop_sync():
     """停止同步任务"""
     SyncService.stop_sync()
     
-    # 将所有 processing 的任务标记为停止
-    updated = Account.query.filter_by(status='processing').update(
-        {'status': 'pending', 'error_message': '用户手动停止同步'}, 
+    # 将正在执行或等待执行的任务全部标记为停止，避免前端一直显示“准备中”
+    updated = Account.query.filter(Account.status.in_(['processing', 'pending'])).update(
+        {
+            'status': 'failed',
+            'progress': 0,
+            'error_message': '用户手动停止同步'
+        },
         synchronize_session=False
     )
     db.session.commit()

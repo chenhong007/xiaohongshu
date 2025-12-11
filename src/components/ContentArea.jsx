@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { RefreshCw, CheckCircle, Circle, Trash2, Upload, Download, AlertCircle, Zap, Database, StopCircle } from 'lucide-react';
-import { accountApi, COOKIE_INVALID_EVENT } from '../services';
+import { accountApi, authApi, COOKIE_INVALID_EVENT } from '../services';
 
 export const ContentArea = ({ activeTab, searchTerm, onAddClick, refreshTrigger, onRefresh }) => {
   const [accounts, setAccounts] = useState([]);
@@ -21,6 +21,19 @@ export const ContentArea = ({ activeTab, searchTerm, onAddClick, refreshTrigger,
     window.dispatchEvent(new CustomEvent(COOKIE_INVALID_EVENT));
   };
 
+  // 强制验证 Cookie 状态后再决定是否触发失效事件，避免旧错误反复告警
+  const emitCookieInvalidSafely = useCallback(async () => {
+    try {
+      const me = await authApi.getCurrentUser(true);
+      if (!me?.is_connected) {
+        emitCookieInvalid();
+      }
+    } catch (err) {
+      console.warn('Force check cookie failed, emit invalid event anyway:', err);
+      emitCookieInvalid();
+    }
+  }, []);
+
   // 检测认证错误并触发事件
   useEffect(() => {
     // 检查是否有新的失败状态且包含 Cookie 错误
@@ -37,13 +50,13 @@ export const ContentArea = ({ activeTab, searchTerm, onAddClick, refreshTrigger,
     });
 
     if (hasNewAuthError) {
-      console.log('Detected auth error in account sync, emitting cookie-invalid event');
-      emitCookieInvalid();
+      console.log('Detected auth error in account sync, verifying cookie before emitting invalid event');
+      emitCookieInvalidSafely();
     }
 
     // 更新引用
     prevAccountsRef.current = accounts;
-  }, [accounts]);
+  }, [accounts, emitCookieInvalidSafely]);
 
   // 获取账号列表
   const fetchAccounts = useCallback(async (silent = false) => {

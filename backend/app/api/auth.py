@@ -5,7 +5,7 @@ from flask import Blueprint, request, current_app
 from datetime import datetime
 
 from ..extensions import db
-from ..models import Cookie
+from ..models import Cookie, Account
 from ..utils.responses import ApiResponse, success_response
 from ..utils.validators import validate_cookie_str
 from ..utils.crypto import encrypt_cookie, decrypt_cookie, get_crypto
@@ -16,6 +16,26 @@ logger = get_logger('auth')
 
 # Cookie 验证间隔（秒）- 5分钟内不重复验证
 COOKIE_CHECK_INTERVAL = 300
+
+
+def reset_account_errors():
+    """
+    清理账号同步的历史错误状态，避免旧的 Cookie 失效信息反复触发
+    """
+    try:
+        Account.query.filter(Account.status == 'failed').update(
+            {
+                'status': 'pending',
+                'error_message': None,
+                'progress': 0
+            },
+            synchronize_session=False
+        )
+        db.session.commit()
+        logger.info("已清理账号的失败状态和错误信息")
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"清理账号错误状态失败: {e}")
 
 
 def get_active_cookie():
@@ -385,6 +405,9 @@ def manual_cookie():
         
         db.session.add(cookie)
         db.session.commit()
+
+        # 清理历史同步错误，避免旧错误反复触发 Cookie 失效提示
+        reset_account_errors()
         
         # 检查是否安全存储
         crypto = get_crypto()
@@ -541,6 +564,9 @@ def manual_cookie_encrypted():
         
         db.session.add(cookie)
         db.session.commit()
+
+        # 清理历史同步错误，避免旧错误反复触发 Cookie 失效提示
+        reset_account_errors()
         
         crypto = get_crypto()
         run_info = cookie.get_run_info()
