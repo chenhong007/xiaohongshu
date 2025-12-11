@@ -117,6 +117,33 @@ class SyncService:
         return False
 
     @staticmethod
+    def _is_xsec_token_error(msg):
+        """判断是否为 xsec_token 失效/签名错误"""
+        if not msg:
+            return False
+        tokens = ['xsec', '签名', 'token', '参数错误', 'invalid signature']
+        msg_lower = str(msg).lower()
+        return any(keyword in msg_lower for keyword in tokens)
+
+    @staticmethod
+    def _refresh_account_xsec_token(account, xhs_apis, cookie_str):
+        """重新获取并保存账号的 xsec_token"""
+        if not account:
+            return ''
+        try:
+            success_token, msg_token, fetched_token = xhs_apis.get_user_xsec_token(account.user_id, cookie_str)
+            if success_token and fetched_token:
+                account.xsec_token = fetched_token
+                db.session.commit()
+                logger.info(f"Refreshed xsec_token for {account.user_id}")
+                return fetched_token
+            logger.info(f"Failed to refresh xsec_token for {account.user_id}: {msg_token}")
+        except Exception as e:
+            logger.info(f"Exception refreshing xsec_token for {account.user_id}: {e}")
+            db.session.rollback()
+        return account.xsec_token or ''
+
+    @staticmethod
     def _sleep_with_jitter(sync_mode):
         """深度同步时增加随机间隔，降低爬虫特征
         
@@ -258,9 +285,20 @@ class SyncService:
                     user_url = f'https://www.xiaohongshu.com/user/profile/{account.user_id}'
                     warning_msg = f"缺少xsec_token,可能导致同步失败"
                     logger.info(f"Warning: No xsec_token for account {account.user_id}, sync may fail")
+                    if sync_mode == 'deep':
+                        account.status = 'failed'
+                        account.error_message = "深度同步需要有效的 xsec_token，请尝试重新登录后再试"
+                        db.session.commit()
+                        continue
                 
                 # 获取用户所有笔记列表
                 success, msg, all_note_info = xhs_apis.get_user_all_notes(user_url, cookie_str)
+                if not success and sync_mode == 'deep' and SyncService._is_xsec_token_error(msg):
+                    new_token = SyncService._refresh_account_xsec_token(account, xhs_apis, cookie_str)
+                    if new_token and new_token != xsec_token:
+                        xsec_token = new_token
+                        user_url = f'https://www.xiaohongshu.com/user/profile/{account.user_id}?xsec_token={xsec_token}&xsec_source=pc_search'
+                        success, msg, all_note_info = xhs_apis.get_user_all_notes(user_url, cookie_str)
                 
                 # 策略优化:如果获取成功但列表为空,尝试强制刷新xsec_token并重试一次
                 # 这解决了一些因token过期或无效导致看似成功但无数据的问题
@@ -384,7 +422,10 @@ class SyncService:
                     note_id = simple_note.get('note_id') or simple_note.get('id')
                     # 优先使用笔记自带的xsec_token（由get_user_all_notes添加）,否则使用账号的
                     note_xsec_token = simple_note.get('xsec_token') or account_xsec_token
-                    note_url = f"https://www.xiaohongshu.com/explore/{note_id}?xsec_token={note_xsec_token}"
+                    if note_xsec_token:
+                        note_url = f"https://www.xiaohongshu.com/explore/{note_id}?xsec_token={note_xsec_token}&xsec_source=pc_search"
+                    else:
+                        note_url = f"https://www.xiaohongshu.com/explore/{note_id}"
                     
                     need_fetch_detail = False
                     
@@ -425,6 +466,11 @@ class SyncService:
                                 need_fetch_detail = True
                                 logger.info(f"Note {note_id} missing cover_remote, will fetch detail")
                             
+                            # 缺失本地封面路径时强制回源，确保封面可重新下载
+                            if not need_fetch_detail and (not existing_note.cover_local or existing_note.cover_local == ''):
+                                need_fetch_detail = True
+                                logger.info(f"Note {note_id} missing cover_local, will fetch detail")
+                            
                             # 【新增】强制检查本地媒体资源是否存在
                             if not need_fetch_detail and SyncService._is_media_missing(existing_note):
                                 need_fetch_detail = True
@@ -438,8 +484,8 @@ class SyncService:
                         # 极速更新(只更新互动数据)
                         # 【重要说明】列表页API只返回点赞数,不返回收藏、评论、转发数和发布时间
                         try:
-                            # 从列表页数据中提取互动信息
-                            cleaned_data = handle_note_info(simple_note, from_list=True)
+                            # 从列表页数据中提取互动信息，传入笔记级别的xsec_token
+                            cleaned_data = handle_note_info(simple_note, from_list=True, xsec_token=note_xsec_token)
                             
                             if sync_mode == 'deep':
                                 # 深度模式下,如果是旧笔记,只更新点赞数（列表页唯一可用的互动数据）
@@ -496,6 +542,13 @@ class SyncService:
                                     db.session.commit()
                                     SyncService._mark_accounts_failed(remaining_ids, auth_error_msg)
                                     break
+                                elif SyncService._is_xsec_token_error(msg):
+                                    new_note_token = SyncService._refresh_account_xsec_token(account, xhs_apis, cookie_str)
+                                    if new_note_token and new_note_token != note_xsec_token:
+                                        note_xsec_token = new_note_token
+                                        note_url = f"https://www.xiaohongshu.com/explore/{note_id}?xsec_token={note_xsec_token}&xsec_source=pc_search"
+                                        simple_note['xsec_token'] = note_xsec_token
+                                        continue
                                 else:
                                     # 非认证错误，记录日志
                                     logger.warning(f"Failed to get note detail for {note_id}: {msg}")
@@ -508,7 +561,8 @@ class SyncService:
                                     if data and data.get('items') and len(data['items']) > 0:
                                         note_data = data['items'][0]
                                         note_data['url'] = note_url
-                                        cleaned_data = handle_note_info(note_data, from_list=False)
+                                        # 传入笔记级别的xsec_token以便存储
+                                        cleaned_data = handle_note_info(note_data, from_list=False, xsec_token=note_xsec_token)
                                         # 深度同步获取详情后，下载所有媒体资源
                                         SyncService._save_note(cleaned_data, download_media=True)
                                         detail_saved = True
@@ -534,7 +588,8 @@ class SyncService:
                         if not detail_saved:
                             try:
                                 logger.info(f"Saving note {note_id} with list data as fallback")
-                                cleaned_data = handle_note_info(simple_note, from_list=True)
+                                # 传入笔记级别的xsec_token以便存储
+                                cleaned_data = handle_note_info(simple_note, from_list=True, xsec_token=note_xsec_token)
                                 # 列表页数据，不下载完整媒体（因为没有详情），但封面可以获取
                                 SyncService._save_note(cleaned_data, download_media=False)
                             except Exception as e:
@@ -743,6 +798,9 @@ class SyncService:
                     note.cover_remote = cover_remote
                 if cover_local:
                     note.cover_local = cover_local
+                # 【关键】保存笔记级别的xsec_token
+                if note_data.get('xsec_token'):
+                    note.xsec_token = note_data['xsec_token']
                     
                 note.last_updated = datetime.utcnow()
             else:
@@ -766,6 +824,7 @@ class SyncService:
                     ip_location=note_data['ip_location'] or '',
                     cover_remote=cover_remote or '',
                     cover_local=cover_local or '',
+                    xsec_token=note_data.get('xsec_token') or '',  # 笔记级别的xsec_token
                 )
                 db.session.add(note)
             

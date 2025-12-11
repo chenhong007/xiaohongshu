@@ -62,9 +62,19 @@ def handle_user_info(data, user_id):
         'tags': tags,
     }
 
-def handle_note_info(data, from_list=False):
+def handle_note_info(data, from_list=False, xsec_token=None):
+    """处理笔记数据
+    
+    Args:
+        data: API 返回的笔记数据
+        from_list: 是否来自列表页 API
+        xsec_token: 笔记级别的 xsec_token（用于后续获取详情）
+    """
     # 【关键修复】兼容 API 返回的两种字段名：'note_id' 或 'id'
     note_id = data.get('note_id') or data.get('id')
+    
+    # 优先使用传入的 xsec_token，其次使用数据中的
+    note_xsec_token = xsec_token or data.get('xsec_token', '')
     
     if from_list:
         # 处理列表页返回的简单数据结构
@@ -158,6 +168,7 @@ def handle_note_info(data, from_list=False):
             'tags': tags,
             'upload_time': upload_time,
             'ip_location': ip_location,
+            'xsec_token': note_xsec_token,  # 笔记级别的 xsec_token
         }
 
     note_url = data['url']
@@ -251,6 +262,7 @@ def handle_note_info(data, from_list=False):
         'tags': tags,
         'upload_time': upload_time,
         'ip_location': ip_location,
+        'xsec_token': note_xsec_token,  # 笔记级别的 xsec_token
     }
 
 def handle_comment_info(data):

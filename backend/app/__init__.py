@@ -59,7 +59,7 @@ def migrate_database(db_path):
                 except sqlite3.OperationalError:
                     pass
 
-        # 检查 notes 表，补充本地/远程封面字段
+        # 检查 notes 表，补充本地/远程封面字段和xsec_token
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='notes'")
         if cursor.fetchone():
             cursor.execute("PRAGMA table_info(notes)")
@@ -67,6 +67,7 @@ def migrate_database(db_path):
             note_columns_to_add = {
                 'cover_remote': 'VARCHAR(512)',
                 'cover_local': 'VARCHAR(512)',
+                'xsec_token': 'VARCHAR(256)',  # 笔记级别的验证token
             }
             for column_name, column_type in note_columns_to_add.items():
                 if column_name not in notes_columns:

@@ -36,6 +36,9 @@ class Note(db.Model):
     cover_remote = db.Column(db.String(512))
     cover_local = db.Column(db.String(512))
     
+    # xsec_token: 笔记级别的验证token，用于获取笔记详情API
+    xsec_token = db.Column(db.String(256))
+    
     # 元数据
     last_updated = db.Column(db.DateTime, default=datetime.utcnow)
     
@@ -78,6 +81,7 @@ class Note(db.Model):
             'ip_location': self.ip_location,
             'cover_remote': self.cover_remote,
             'cover_local': self.cover_local,
+            'xsec_token': self.xsec_token,
             'last_updated': self.last_updated.isoformat() if self.last_updated else None,
         }
     
