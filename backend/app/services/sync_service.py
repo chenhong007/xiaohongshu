@@ -97,6 +97,51 @@ class SyncService:
         return False
 
     @staticmethod
+    def _get_missing_required_fields(note):
+        """返回笔记缺失的必备字段列表（包括本地资源）"""
+        if not note:
+            return ['note']
+
+        missing_fields = []
+
+        def is_blank(value):
+            return value is None or (isinstance(value, str) and value.strip() == '')
+
+        # 基础字段(不能为空字符串)
+        for field in ['note_id', 'user_id', 'nickname', 'avatar', 'title']:
+            if is_blank(getattr(note, field, None)):
+                missing_fields.append(field)
+
+        # 描述字段允许空字符串，但不允许为 None
+        if getattr(note, 'desc', None) is None:
+            missing_fields.append('desc')
+
+        if is_blank(getattr(note, 'upload_time', None)):
+            missing_fields.append('upload_time')
+
+        for field in ['cover_remote', 'cover_local']:
+            if is_blank(getattr(note, field, None)):
+                missing_fields.append(field)
+
+        note_type = getattr(note, 'type', '')
+        if note_type == '视频':
+            if is_blank(getattr(note, 'video_addr', None)):
+                missing_fields.append('video_addr')
+        else:
+            try:
+                image_list = json.loads(note.image_list) if note.image_list else []
+            except Exception:
+                image_list = []
+            # 图集至少要有封面 + 额外图片（>1）
+            if len(image_list) <= 1:
+                missing_fields.append('image_list')
+
+        if SyncService._is_media_missing(note):
+            missing_fields.append('local_media')
+
+        return missing_fields
+
+    @staticmethod
     def _handle_auth_error(msg):
         """检查错误信息是否为认证错误,如果是则标记Cookie失效"""
         auth_errors = ['未登录', '登录已过期', '需要登录', '401', '403', 'Unauthorized']
@@ -434,47 +479,18 @@ class SyncService:
                         # 检查数据库中是否存在该笔记
                         existing_note = Note.query.filter_by(note_id=note_id).first()
                         
+                        missing_fields = []
                         if not existing_note:
                             need_fetch_detail = True
+                            missing_fields = ['new_note']
                             logger.info(f"Note {note_id} not exists, will fetch detail")
                         else:
-                            # 检查关键媒体字段是否缺失(可能是之前极速同步的)
-                            if existing_note.type == '视频' and not existing_note.video_addr:
+                            missing_fields = SyncService._get_missing_required_fields(existing_note)
+                            if missing_fields:
                                 need_fetch_detail = True
-                                logger.info(f"Note {note_id} is video but missing video_addr, will fetch detail")
-                            elif (existing_note.type == '图集' or existing_note.type == 'normal'):
-                                # 【关键修复】图集类型需要检查是否只有1张图片（封面）
-                                # 列表页API只返回封面，完整图片列表需要从详情页获取
-                                try:
-                                    img_list = json.loads(existing_note.image_list) if existing_note.image_list else []
-                                except:
-                                    img_list = []
-                                # 如果图片列表为空或只有1张（封面），需要重新获取详情
-                                if len(img_list) <= 1:
-                                    need_fetch_detail = True
-                                    logger.info(f"Note {note_id} is image set but only has {len(img_list)} images, will fetch detail")
-                            # 【关键修复】检查是否缺少详情页数据
-                            # upload_time是详情页才返回的字段,如果为空说明从未获取过详情
-                            # 这时收藏、评论、转发数据也是不准确的(默认为0)
-                            if not need_fetch_detail and (not existing_note.upload_time or existing_note.upload_time == ''):
-                                need_fetch_detail = True
-                                logger.info(f"Note {note_id} missing upload_time, will fetch detail")
-                            
-                            # 【关键修复】检查是否缺少封面数据（cover_remote 和 cover_local）
-                            # 这两个字段是数据库新增的，旧数据可能缺失
-                            if not need_fetch_detail and (not existing_note.cover_remote or existing_note.cover_remote == ''):
-                                need_fetch_detail = True
-                                logger.info(f"Note {note_id} missing cover_remote, will fetch detail")
-                            
-                            # 缺失本地封面路径时强制回源，确保封面可重新下载
-                            if not need_fetch_detail and (not existing_note.cover_local or existing_note.cover_local == ''):
-                                need_fetch_detail = True
-                                logger.info(f"Note {note_id} missing cover_local, will fetch detail")
-                            
-                            # 【新增】强制检查本地媒体资源是否存在
-                            if not need_fetch_detail and SyncService._is_media_missing(existing_note):
-                                need_fetch_detail = True
-                                logger.info(f"Note {note_id} missing local media files, forcing detail fetch")
+                                logger.info(
+                                    f"Note {note_id} missing required fields {missing_fields}, will fetch detail"
+                                )
                     else:
                         # 方案A:极速同步
                         # 永远只使用列表页数据,不获取详情
