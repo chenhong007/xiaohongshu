@@ -441,11 +441,14 @@ export const ContentArea = ({
     const isProcessing = processingAccounts.length > 0;
     
     if (isProcessing) {
-      console.log('[同步调试] 检测到正在处理的账号，启动轮询:', processingAccounts.map(acc => ({
-        id: acc.id, name: acc.name, status: acc.status, progress: acc.progress
-      })));
+      // 只显示正在处理的账号，格式更简洁
+      const summary = processingAccounts.map(acc => 
+        `${acc.name || acc.user_id}: ${acc.progress || 0}% (${acc.loaded_msgs || 0}/${acc.total_msgs || 0})`
+      ).join(', ');
+      console.log(`[同步调试] 正在处理 ${processingAccounts.length} 个账号:`, summary);
+      
       const timer = setInterval(() => {
-        console.log('[同步调试] 轮询刷新账号列表...');
+        // 轮询时静默刷新，不输出日志（减少噪音）
         fetchAccounts(true);
       }, 2000);
       return () => {

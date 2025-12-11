@@ -18,7 +18,10 @@ function App() {
 
   // 获取账号列表
   const fetchAccounts = useCallback(async (silent = false) => {
-    console.log('[同步调试] fetchAccounts 被调用, silent:', silent);
+    // 静默刷新时不输出日志，减少噪音
+    if (!silent) {
+      console.log('[同步调试] fetchAccounts 被调用');
+    }
     
     // 如果已有缓存数据，静默刷新（不显示 loading）
     if (!silent && accounts.length === 0) {
@@ -30,17 +33,24 @@ function App() {
       const data = await accountApi.getAll();
       const accountsData = Array.isArray(data) ? data : [];
       
-      // 打印账号状态变化
-      const statusSummary = accountsData.reduce((acc, a) => {
-        acc[a.status || 'unknown'] = (acc[a.status || 'unknown'] || 0) + 1;
-        return acc;
-      }, {});
-      console.log('[同步调试] 获取到账号列表, 状态统计:', statusSummary);
+      // 只在非静默模式下输出日志，或有正在处理的账号时输出
+      const processingAccounts = accountsData.filter(a => a.status === 'processing' || a.status === 'pending');
       
-      // 打印每个账号的详细状态
-      accountsData.forEach(acc => {
-        console.log(`[同步调试] 账号 ${acc.name || acc.user_id}: 状态=${acc.status}, 进度=${acc.progress}%, 已采集=${acc.loaded_msgs}/${acc.total_msgs}, 错误=${acc.error_message || '无'}`);
-      });
+      if (!silent) {
+        // 非静默模式：输出状态统计
+        const statusSummary = accountsData.reduce((acc, a) => {
+          acc[a.status || 'unknown'] = (acc[a.status || 'unknown'] || 0) + 1;
+          return acc;
+        }, {});
+        console.log('[同步调试] 账号列表, 状态统计:', statusSummary);
+      }
+      
+      // 只打印正在处理的账号状态（无论是否静默）
+      if (processingAccounts.length > 0) {
+        processingAccounts.forEach(acc => {
+          console.log(`[同步调试] 正在处理: ${acc.name || acc.user_id} - ${acc.progress}% (${acc.loaded_msgs}/${acc.total_msgs})`);
+        });
+      }
       
       setAccounts(accountsData);
       accountsLoadedRef.current = true;

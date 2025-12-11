@@ -8,7 +8,7 @@ from flask_cors import CORS
 
 from .config import Config, get_config
 from .extensions import db
-from .api import accounts_bp, notes_bp, auth_bp, search_bp
+from .api import accounts_bp, notes_bp, auth_bp, search_bp, sync_logs_bp
 from .utils.logger import setup_logger, get_logger
 
 
@@ -47,6 +47,7 @@ def migrate_database(db_path):
             'progress': 'INTEGER DEFAULT 0',
             'status': "VARCHAR(32) DEFAULT 'pending'",
             'error_message': 'TEXT',
+            'sync_logs': 'TEXT',  # JSON格式的同步日志
             'created_at': 'DATETIME',
             'updated_at': 'DATETIME',
         }
@@ -133,12 +134,14 @@ def create_app(config_class=None):
     app.register_blueprint(notes_bp, url_prefix='/api')
     app.register_blueprint(auth_bp, url_prefix='/api')
     app.register_blueprint(search_bp, url_prefix='/api')
+    app.register_blueprint(sync_logs_bp, url_prefix='/api')
     
     # API v1 版本（推荐使用）
     app.register_blueprint(accounts_bp, url_prefix='/api/v1', name='accounts_v1')
     app.register_blueprint(notes_bp, url_prefix='/api/v1', name='notes_v1')
     app.register_blueprint(auth_bp, url_prefix='/api/v1', name='auth_v1')
     app.register_blueprint(search_bp, url_prefix='/api/v1', name='search_v1')
+    app.register_blueprint(sync_logs_bp, url_prefix='/api/v1', name='sync_logs_v1')
     
     # 数据库迁移检查（在 create_all 之前）
     db_uri = app.config.get('SQLALCHEMY_DATABASE_URI', '')

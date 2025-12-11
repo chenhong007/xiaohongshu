@@ -16,6 +16,7 @@ from ..models import Account, Note, Cookie
 from ..utils.logger import get_logger, log_sync_event
 from ..config import Config
 from xhs_utils.xhs_util import get_common_headers
+from .sync_log_broadcaster import sync_log_broadcaster
 
 # 获取日志器
 logger = get_logger('sync')
@@ -366,6 +367,10 @@ class SyncService:
         """同步账号的笔记数据"""
         logger.info(f"开始同步账号: {account_ids}, 模式: {sync_mode}")
         
+        # 【关键】重置限流计数器，开始新的同步任务
+        SyncService._reset_rate_limit_counter()
+        logger.info(f"[限流计数] 重置限流计数器")
+        
         remaining_ids = set(account_ids)
         cookie_str = SyncService.get_cookie_str()
         if not cookie_str:
@@ -414,6 +419,14 @@ class SyncService:
                 # 当前账号即将处理，移出剩余集合
                 remaining_ids.discard(acc_id)
                 auth_error_msg = None
+                account_name = account.name or account.user_id
+                
+                # 广播开始同步
+                sync_log_broadcaster.info(
+                    f"开始同步账号: {account_name}",
+                    account_id=acc_id,
+                    account_name=account_name
+                )
                 
                 # 更新状态为处理中,清除之前的错误信息和旧日志
                 account.status = 'processing'
@@ -452,9 +465,12 @@ class SyncService:
                     user_url = f'https://www.xiaohongshu.com/user/profile/{account.user_id}'
                     warning_msg = f"缺少xsec_token,可能导致同步失败"
                     logger.info(f"Warning: No xsec_token for account {account.user_id}, sync may fail")
+                    sync_log_broadcaster.warn(f"缺少 xsec_token，可能导致同步失败", account_id=acc_id, account_name=account_name)
                     if sync_mode == 'deep':
+                        error_msg = "深度同步需要有效的 xsec_token，请尝试重新登录后再试"
+                        sync_log_broadcaster.error(error_msg, account_id=acc_id, account_name=account_name)
                         account.status = 'failed'
-                        account.error_message = "深度同步需要有效的 xsec_token，请尝试重新登录后再试"
+                        account.error_message = error_msg
                         db.session.commit()
                         continue
                 
@@ -576,6 +592,14 @@ class SyncService:
                 account.loaded_msgs = 0 
                 db.session.commit()
                 
+                # 广播获取笔记列表成功
+                sync_log_broadcaster.info(
+                    f"获取笔记列表成功，共 {total} 篇笔记",
+                    account_id=acc_id,
+                    account_name=account_name,
+                    extra={'total': total}
+                )
+                
                 # 设置日志收集器的总数
                 if sync_log:
                     sync_log.set_total(total)
@@ -672,14 +696,27 @@ class SyncService:
                             if is_rate_limited:
                                 rate_limited = True
                                 logger.warning(f"Rate limited for note {note_id}: {msg}")
+                                # 【关键】记录限流事件，触发动态退避
+                                SyncService._record_rate_limit()
+                                # 广播限流警告
+                                sync_log_broadcaster.warn(
+                                    f"访问频次异常，正在重试 ({retry_attempt + 1}/3)",
+                                    account_id=acc_id,
+                                    account_name=account_name,
+                                    note_id=note_id
+                                )
                                 # 记录限流日志
                                 if sync_log:
                                     sync_log.add_issue(
                                         SyncLogCollector.TYPE_RATE_LIMITED,
                                         note_id=note_id,
                                         message=str(msg),
-                                        extra={'retry': retry_attempt + 1}
+                                        extra={'retry': retry_attempt + 1, 'rate_limit_count': SyncService._rate_limit_counter}
                                     )
+                                # 【关键】限流后等待更长时间再重试
+                                wait_time = random.uniform(15, 30) + SyncService._rate_limit_counter * 5
+                                logger.info(f"[限流重试] 等待 {wait_time:.1f}s 后重试")
+                                time.sleep(wait_time)
                                 continue  # 重试
                             
                             if is_unavailable:
@@ -750,9 +787,12 @@ class SyncService:
                                         # 深度同步获取详情后，下载所有媒体资源
                                         SyncService._save_note(cleaned_data, download_media=True)
                                         detail_saved = True
+                                        # 【关键】记录成功，减少限流计数
+                                        SyncService._record_success()
                                         # 记录成功
                                         if sync_log:
                                             sync_log.record_success()
+                                        logger.info(f"[深度同步] 笔记 {note_id} 详情获取成功，含发布时间: {cleaned_data.get('upload_time', '未知')}")
                                         break  # 成功，跳出重试循环
                                     else:
                                         # API 返回 success=True 但数据为空，可能是限流或 token 问题
@@ -779,8 +819,12 @@ class SyncService:
                         
                         # 如果因为限流导致3次都失败，增加额外等待
                         if rate_limited and not detail_saved:
-                            logger.warning(f"Rate limit hit for note {note_id}, adding extra delay")
-                            time.sleep(random.uniform(5, 10))
+                            # 【关键修复】限流后等待更长时间（30-60秒 + 动态退避）
+                            base_wait = random.uniform(30, 60)
+                            dynamic_wait = min(SyncService._rate_limit_counter * 10, 60)
+                            total_wait = base_wait + dynamic_wait
+                            logger.warning(f"[限流失败] 笔记 {note_id} 连续限流，等待 {total_wait:.1f}s 后继续 (计数: {SyncService._rate_limit_counter})")
+                            time.sleep(total_wait)
                         
                         # 【关键修复】如果详情获取失败，至少保存列表页的基本数据
                         # 这样封面等信息能从列表页获取，不会完全为空
