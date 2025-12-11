@@ -1137,6 +1137,10 @@ class XHS_Apis():
             获取笔记无水印图片
             :param img_url: 你想要获取的图片的url
             返回笔记无水印图片
+            
+            【2024-12 更新】修复404问题：
+            1. 添加图片格式参数 ?imageView2/2/w/format/jpg
+            2. 使用 ci.xiaohongshu.com 域名，更稳定
         """
         success = True
         msg = '成功'
@@ -1145,23 +1149,18 @@ class XHS_Apis():
             # https://sns-webpic-qc.xhscdn.com/202403211626/c4fcecea4bd012a1fe8d2f1968d6aa91/110/0/01e50c1c135e8c010010000000018ab74db332_0.jpg!nd_dft_wlteh_webp_3
             if '.jpg' in img_url:
                 img_id = '/'.join([split for split in img_url.split('/')[-3:]]).split('!')[0]
-                # return f"http://ci.xiaohongshu.com/{img_id}?imageview2/2/w/1920/format/png"
-                # return f"http://ci.xiaohongshu.com/{img_id}?imageview2/2/w/format/png"
-                # return f'https://sns-img-hw.xhscdn.com/{img_id}'
-                new_url = f'https://sns-img-qc.xhscdn.com/{img_id}'
+                # 使用 ci.xiaohongshu.com 域名，添加格式参数
+                new_url = f'https://ci.xiaohongshu.com/{img_id}?imageView2/2/w/format/jpg'
 
             # 'https://sns-webpic-qc.xhscdn.com/202403231640/ea961053c4e0e467df1cc93afdabd630/spectrum/1000g0k0200n7mj8fq0005n7ikbllol6q50oniuo!nd_dft_wgth_webp_3'
             elif 'spectrum' in img_url:
                 img_id = '/'.join(img_url.split('/')[-2:]).split('!')[0]
-                # return f'http://sns-webpic.xhscdn.com/{img_id}?imageView2/2/w/1920/format/jpg'
-                new_url = f'http://sns-webpic.xhscdn.com/{img_id}?imageView2/2/w/format/jpg'
+                new_url = f'https://sns-webpic.xhscdn.com/{img_id}?imageView2/2/w/format/jpg'
             else:
                 # 'http://sns-webpic-qc.xhscdn.com/202403181511/64ad2ea67ce04159170c686a941354f5/1040g008310cs1hii6g6g5ngacg208q5rlf1gld8!nd_dft_wlteh_webp_3'
                 img_id = img_url.split('/')[-1].split('!')[0]
-                # return f"http://ci.xiaohongshu.com/{img_id}?imageview2/2/w/1920/format/png"
-                # return f"http://ci.xiaohongshu.com/{img_id}?imageview2/2/w/format/png"
-                # return f'https://sns-img-hw.xhscdn.com/{img_id}'
-                new_url = f'https://sns-img-qc.xhscdn.com/{img_id}'
+                # 使用 ci.xiaohongshu.com 域名，添加格式参数
+                new_url = f'https://ci.xiaohongshu.com/{img_id}?imageView2/2/w/format/jpg'
         except Exception as e:
             success = False
             msg = str(e)

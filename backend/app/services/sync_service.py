@@ -1034,9 +1034,6 @@ class SyncService:
             if note_data.get('image_list'):
                 logger.info(f"Downloading {len(note_data['image_list'])} images for note {note_id}")
                 for idx, img_url in enumerate(note_data['image_list']):
-                    # 处理URL，尝试获取无水印版本（如果之前没有处理过）
-                    # 这里假设传入的URL已经是最佳URL
-                    
                     ext = '.jpg'
                     filename = f"image_{idx}{ext}"
                     filepath = os.path.join(note_dir, filename)
@@ -1044,20 +1041,43 @@ class SyncService:
                     if os.path.exists(filepath) and os.path.getsize(filepath) > 1024:
                         logger.info(f"Skipping existing image {idx} for note {note_id}")
                         continue
-                        
-                    try:
-                        logger.info(f"Downloading image {idx} from {img_url}")
-                        resp = requests.get(img_url, headers=headers, stream=True, timeout=20)
-                        if resp.status_code == 200:
-                            with open(filepath, 'wb') as f:
-                                for chunk in resp.iter_content(8192):
-                                    f.write(chunk)
-                            downloaded_count += 1
-                            logger.info(f"Successfully downloaded image {idx}")
-                        else:
-                            logger.warning(f"Failed to download image {idx} for {note_id}: {resp.status_code} URL: {img_url}")
-                    except Exception as e:
-                        logger.warning(f"Error downloading image {idx} for {note_id}: {e}")
+                    
+                    # 构建多个备用 URL 进行重试
+                    urls_to_try = [img_url]
+                    
+                    # 如果 URL 包含 sns-img-qc.xhscdn.com，添加带格式参数的备用 URL
+                    if 'sns-img-qc.xhscdn.com' in img_url or 'sns-img-hw.xhscdn.com' in img_url:
+                        img_id = img_url.split('/')[-1].split('?')[0]
+                        urls_to_try.extend([
+                            f'https://ci.xiaohongshu.com/{img_id}?imageView2/2/w/format/jpg',
+                            f'https://sns-img-hw.xhscdn.com/{img_id}?imageView2/2/w/format/jpg',
+                            f'https://sns-img-qc.xhscdn.com/{img_id}?imageView2/2/w/format/jpg',
+                        ])
+                    # 如果是 ci.xiaohongshu.com 但没有格式参数
+                    elif 'ci.xiaohongshu.com' in img_url and '?' not in img_url:
+                        urls_to_try.append(f'{img_url}?imageView2/2/w/format/jpg')
+                    
+                    download_success = False
+                    for try_url in urls_to_try:
+                        try:
+                            logger.info(f"Downloading image {idx} from {try_url}")
+                            resp = requests.get(try_url, headers=headers, stream=True, timeout=20)
+                            if resp.status_code == 200 and int(resp.headers.get('content-length', 0)) > 1024:
+                                with open(filepath, 'wb') as f:
+                                    for chunk in resp.iter_content(8192):
+                                        f.write(chunk)
+                                downloaded_count += 1
+                                download_success = True
+                                logger.info(f"Successfully downloaded image {idx}")
+                                break
+                            else:
+                                logger.info(f"URL returned {resp.status_code}, trying next URL...")
+                        except Exception as e:
+                            logger.info(f"Failed with {try_url}: {e}")
+                            continue
+                    
+                    if not download_success:
+                        logger.warning(f"Failed to download image {idx} for {note_id} after trying all URLs")
             else:
                 logger.info(f"No image_list found for note {note_id}")
             
