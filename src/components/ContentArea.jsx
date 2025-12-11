@@ -146,7 +146,12 @@ export const ContentArea = ({ activeTab, searchTerm, onAddClick, refreshTrigger,
     const idSet = new Set(ids);
     setAccounts(prev => prev.map(acc => {
       if (idSet.has(acc.id)) {
-        return { ...acc, status, progress };
+        // 如果是开始同步（状态变为 processing），则重置已采集数为 0
+        const updates = { status, progress };
+        if (status === 'processing') {
+          updates.loaded_msgs = 0;
+        }
+        return { ...acc, ...updates };
       }
       return acc;
     }));

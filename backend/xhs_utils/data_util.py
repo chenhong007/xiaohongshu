@@ -200,9 +200,22 @@ def handle_note_info(data, from_list=False):
                 pass  # 转换失败则使用原URL
             image_list.append(best_url)
     if note_type == '视频':
-        video_cover = image_list[0]
-        video_addr = 'https://sns-video-bd.xhscdn.com/' + data['note_card']['video']['consumer']['origin_video_key']
-        # success, msg, video_addr = XHS_Apis.get_note_no_water_video(note_id)
+        if image_list:
+            video_cover = image_list[0]
+        else:
+            # 尝试从 cover 字段获取
+            cover = data['note_card'].get('cover', {})
+            video_cover = cover.get('url_default') or cover.get('url')
+            if not video_cover and cover.get('info_list') and len(cover['info_list']) > 0:
+                video_cover = cover['info_list'][0].get('url')
+        
+        # 安全获取视频地址
+        try:
+            video_key = data['note_card']['video']['consumer']['origin_video_key']
+            video_addr = 'https://sns-video-bd.xhscdn.com/' + video_key
+        except (KeyError, TypeError):
+            video_addr = None
+            
     else:
         video_cover = None
         video_addr = None

@@ -484,6 +484,7 @@ class SyncService:
     def _download_all_media(note_id, note_data):
         """下载笔记的所有媒体资源（图片/视频）到本地归档"""
         try:
+            logger.info(f"Starting media download for note {note_id}...")
             # 创建笔记专属目录
             note_dir = os.path.join(Config.MEDIA_PATH, str(note_id))
             if not os.path.exists(note_dir):
@@ -494,6 +495,7 @@ class SyncService:
             
             # 1. 下载图片列表
             if note_data.get('image_list'):
+                logger.info(f"Downloading {len(note_data['image_list'])} images for note {note_id}")
                 for idx, img_url in enumerate(note_data['image_list']):
                     # 处理URL，尝试获取无水印版本（如果之前没有处理过）
                     # 这里假设传入的URL已经是最佳URL
@@ -503,25 +505,32 @@ class SyncService:
                     filepath = os.path.join(note_dir, filename)
                     
                     if os.path.exists(filepath) and os.path.getsize(filepath) > 1024:
+                        logger.info(f"Skipping existing image {idx} for note {note_id}")
                         continue
                         
                     try:
+                        logger.info(f"Downloading image {idx} from {img_url}")
                         resp = requests.get(img_url, headers=headers, stream=True, timeout=20)
                         if resp.status_code == 200:
                             with open(filepath, 'wb') as f:
                                 for chunk in resp.iter_content(8192):
                                     f.write(chunk)
                             downloaded_count += 1
+                            logger.info(f"Successfully downloaded image {idx}")
                         else:
-                            logger.warning(f"Failed to download image {idx} for {note_id}: {resp.status_code}")
+                            logger.warning(f"Failed to download image {idx} for {note_id}: {resp.status_code} URL: {img_url}")
                     except Exception as e:
                         logger.warning(f"Error downloading image {idx} for {note_id}: {e}")
+            else:
+                logger.info(f"No image_list found for note {note_id}")
             
             # 2. 下载视频
             if note_data.get('note_type') == '视频' and note_data.get('video_addr'):
                 video_url = note_data['video_addr']
                 filename = f"video.mp4"
                 filepath = os.path.join(note_dir, filename)
+                
+                logger.info(f"Downloading video for note {note_id} from {video_url}")
                 
                 if not (os.path.exists(filepath) and os.path.getsize(filepath) > 1024):
                     try:
@@ -532,11 +541,19 @@ class SyncService:
                                     f.write(chunk)
                             downloaded_count += 1
                             logger.info(f"Successfully downloaded video for {note_id}")
+                        else:
+                            logger.warning(f"Failed to download video for {note_id}: {resp.status_code}")
                     except Exception as e:
                         logger.warning(f"Error downloading video for {note_id}: {e}")
+                else:
+                    logger.info(f"Skipping existing video for note {note_id}")
+            elif note_data.get('note_type') == '视频':
+                logger.warning(f"Video note {note_id} missing video_addr")
 
             if downloaded_count > 0:
                 logger.info(f"Archived {downloaded_count} media files for note {note_id}")
+            else:
+                logger.info(f"No media files downloaded for note {note_id} (maybe already exists or empty list)")
                 
         except Exception as e:
             logger.error(f"Error in _download_all_media for {note_id}: {e}")
@@ -641,9 +658,11 @@ class SyncService:
             
             db.session.commit()
             
-            # 如果请求全量下载媒体资源
             if download_media:
+                logger.info(f"Triggering media download for note {note_id}")
                 SyncService._download_all_media(note_id, note_data)
+            else:
+                logger.info(f"Skipping media download for note {note_id} (download_media=False)")
                 
         except Exception as e:
             # 发生异常时回滚session,避免PendingRollbackError
