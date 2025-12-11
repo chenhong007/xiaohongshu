@@ -2,6 +2,7 @@
 输入验证工具
 """
 import re
+from datetime import datetime, timedelta, timezone
 from typing import List, Tuple, Optional, Any
 
 
@@ -107,6 +108,68 @@ def validate_cookie_str(cookie_str: Any) -> Tuple[bool, Optional[str]]:
             return False, f"Cookie 缺少必要字段 '{field}'"
     
     return True, None
+
+
+def validate_filled_at(
+    filled_at: Any,
+    field_name: str = '填写时间',
+    future_tolerance_seconds: int = 300
+) -> Tuple[bool, Optional[str], Optional[datetime]]:
+    """
+    验证用户填写 Cookie 的时间
+    支持 ISO8601 字符串或时间戳（秒/毫秒）
+    
+    Returns:
+        (is_valid, error_message, parsed_datetime_utc)
+    """
+    if filled_at is None:
+        return True, None, None
+    
+    # 允许空字符串直接忽略
+    if isinstance(filled_at, str) and not filled_at.strip():
+        return True, None, None
+    
+    parsed_dt: Optional[datetime] = None
+    
+    def _ts_to_dt(value: float) -> datetime:
+        # 支持毫秒时间戳
+        if value > 1e12:
+            value = value / 1000.0
+        return datetime.fromtimestamp(value, tz=timezone.utc)
+    
+    if isinstance(filled_at, (int, float)):
+        try:
+            parsed_dt = _ts_to_dt(float(filled_at))
+        except Exception:
+            pass
+    elif isinstance(filled_at, str):
+        ts_str = filled_at.strip()
+        # 先尝试 ISO8601
+        try:
+            iso_str = ts_str.replace('Z', '+00:00') if ts_str.endswith('Z') else ts_str
+            parsed_dt = datetime.fromisoformat(iso_str)
+        except ValueError:
+            # 再尝试数字时间戳
+            try:
+                parsed_dt = _ts_to_dt(float(ts_str))
+            except Exception:
+                pass
+    
+    if not parsed_dt:
+        return False, f'{field_name} 格式不正确', None
+    
+    # 统一为 UTC naive
+    if parsed_dt.tzinfo:
+        parsed_dt = parsed_dt.astimezone(timezone.utc).replace(tzinfo=None)
+    else:
+        parsed_dt = parsed_dt.replace(tzinfo=None)
+    
+    # 不允许明显晚于当前时间，避免前端时间异常导致负运行时长
+    now_utc = datetime.utcnow()
+    if parsed_dt - now_utc > timedelta(seconds=future_tolerance_seconds):
+        return False, f'{field_name} 不能晚于当前时间', None
+    
+    return True, None, parsed_dt
 
 
 def validate_sync_mode(mode: Any) -> Tuple[bool, Optional[str], str]:

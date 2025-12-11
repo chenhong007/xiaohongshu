@@ -216,7 +216,7 @@ npm run build
 | GET | `/api/user/me` | 获取当前用户信息 |
 | POST | `/api/login` | 登录 |
 | POST | `/api/logout` | 登出 |
-| POST | `/api/cookie/manual` | 手动设置 Cookie |
+| POST | `/api/cookie/manual` | 手动设置 Cookie（可携带 filled_at 标记填写时间） |
 | POST | `/api/cookie/check` | 检查 Cookie 有效性 |
 
 ### 搜索相关

@@ -372,7 +372,10 @@ export const authApi = {
   /**
    * 手动添加 Cookie（明文传输 - 不推荐）
    */
-  setManualCookie: (cookies) => api.post('/cookie/manual', { cookies }),
+  setManualCookie: (cookies) => api.post('/cookie/manual', { 
+    cookies,
+    filled_at: new Date().toISOString(),
+  }),
 
   /**
    * 手动添加 Cookie（加密传输 - 推荐）
@@ -381,7 +384,8 @@ export const authApi = {
     const { encrypted, iv } = await cookieEncryption.encrypt(cookies);
     return api.post('/cookie/manual-encrypted', { 
       encrypted_cookies: encrypted, 
-      iv 
+      iv,
+      filled_at: new Date().toISOString(),
     });
   },
 

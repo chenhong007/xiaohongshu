@@ -341,17 +341,27 @@ class SyncService:
                         
                         if not existing_note:
                             need_fetch_detail = True
+                            logger.info(f"Note {note_id} not exists, will fetch detail")
                         else:
                             # 检查关键媒体字段是否缺失(可能是之前极速同步的)
                             if existing_note.type == '视频' and not existing_note.video_addr:
                                 need_fetch_detail = True
-                            elif (existing_note.type == '图集' or existing_note.type == 'normal') and \
-                                 (not existing_note.image_list or existing_note.image_list == '[]'):
-                                need_fetch_detail = True
+                                logger.info(f"Note {note_id} is video but missing video_addr, will fetch detail")
+                            elif (existing_note.type == '图集' or existing_note.type == 'normal'):
+                                # 【关键修复】图集类型需要检查是否只有1张图片（封面）
+                                # 列表页API只返回封面，完整图片列表需要从详情页获取
+                                try:
+                                    img_list = json.loads(existing_note.image_list) if existing_note.image_list else []
+                                except:
+                                    img_list = []
+                                # 如果图片列表为空或只有1张（封面），需要重新获取详情
+                                if len(img_list) <= 1:
+                                    need_fetch_detail = True
+                                    logger.info(f"Note {note_id} is image set but only has {len(img_list)} images, will fetch detail")
                             # 【关键修复】检查是否缺少详情页数据
                             # upload_time是详情页才返回的字段,如果为空说明从未获取过详情
                             # 这时收藏、评论、转发数据也是不准确的(默认为0)
-                            elif not existing_note.upload_time or existing_note.upload_time == '':
+                            if not need_fetch_detail and (not existing_note.upload_time or existing_note.upload_time == ''):
                                 need_fetch_detail = True
                                 logger.info(f"Note {note_id} missing upload_time, will fetch detail")
                     else:

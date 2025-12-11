@@ -7,7 +7,7 @@ from datetime import datetime
 from ..extensions import db
 from ..models import Cookie, Account
 from ..utils.responses import ApiResponse, success_response
-from ..utils.validators import validate_cookie_str
+from ..utils.validators import validate_cookie_str, validate_filled_at
 from ..utils.crypto import encrypt_cookie, decrypt_cookie, get_crypto
 from ..utils.logger import get_logger
 
@@ -347,6 +347,12 @@ def manual_cookie():
     """
     data = request.json or {}
     cookie_str = data.get('cookies', '').strip()
+    filled_at_raw = data.get('filled_at')
+
+    # 验证填写时间（可选）
+    is_filled_valid, filled_error, filled_at_dt = validate_filled_at(filled_at_raw)
+    if not is_filled_valid:
+        return ApiResponse.validation_error(filled_error)
     
     # 验证 Cookie 格式
     is_valid, error_msg = validate_cookie_str(cookie_str)
@@ -395,13 +401,15 @@ def manual_cookie():
             avatar=avatar,
             is_active=True,
             is_valid=True,
-            last_checked=datetime.utcnow()
+            last_checked=datetime.utcnow(),
+            run_start_time=filled_at_dt
         )
         # 使用加密方法设置 Cookie
         cookie.set_cookie_str(cookie_str)
         
         # 启动运行计时器
-        cookie.start_run_timer()
+        if not cookie.run_start_time:
+            cookie.start_run_timer()
         
         db.session.add(cookie)
         db.session.commit()
@@ -502,6 +510,12 @@ def manual_cookie_encrypted():
     data = request.json or {}
     encrypted_cookies = data.get('encrypted_cookies', '').strip()
     iv = data.get('iv', '').strip()
+    filled_at_raw = data.get('filled_at')
+
+    # 验证填写时间（可选）
+    is_filled_valid, filled_error, filled_at_dt = validate_filled_at(filled_at_raw)
+    if not is_filled_valid:
+        return ApiResponse.validation_error(filled_error)
     
     if not encrypted_cookies:
         return ApiResponse.validation_error('缺少加密的 Cookie 数据')
@@ -557,10 +571,12 @@ def manual_cookie_encrypted():
             avatar=avatar,
             is_active=True,
             is_valid=True,
-            last_checked=datetime.utcnow()
+            last_checked=datetime.utcnow(),
+            run_start_time=filled_at_dt
         )
         cookie.set_cookie_str(cookie_str)
-        cookie.start_run_timer()
+        if not cookie.run_start_time:
+            cookie.start_run_timer()
         
         db.session.add(cookie)
         db.session.commit()
