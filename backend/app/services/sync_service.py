@@ -118,25 +118,31 @@ class SyncService:
 
     @staticmethod
     def _sleep_with_jitter(sync_mode):
-        """深度同步时增加随机间隔，降低爬虫特征"""
+        """深度同步时增加随机间隔，降低爬虫特征
+        
+        【重要】深度同步需要请求详情页API，小红书对此有严格的频率限制。
+        太快会导致返回 "访问频次异常" 或 "当前笔记暂时无法浏览" 错误。
+        建议间隔至少2-4秒。
+        """
         if sync_mode != 'deep':
             return
 
         cfg = current_app.config if current_app else {}
         try:
-            min_delay = float(cfg.get('DEEP_SYNC_DELAY_MIN', 0.8))
-            max_delay = float(cfg.get('DEEP_SYNC_DELAY_MAX', 1.8))
-            extra_prob = float(cfg.get('DEEP_SYNC_EXTRA_PAUSE_CHANCE', 0.12))
-            extra_max = float(cfg.get('DEEP_SYNC_EXTRA_PAUSE_MAX', 3.0))
+            # 【修改】增加默认延迟时间以避免限流
+            min_delay = float(cfg.get('DEEP_SYNC_DELAY_MIN', 2.0))
+            max_delay = float(cfg.get('DEEP_SYNC_DELAY_MAX', 4.0))
+            extra_prob = float(cfg.get('DEEP_SYNC_EXTRA_PAUSE_CHANCE', 0.15))
+            extra_max = float(cfg.get('DEEP_SYNC_EXTRA_PAUSE_MAX', 5.0))
         except Exception:
-            min_delay, max_delay, extra_prob, extra_max = 0.8, 1.8, 0.12, 3.0
+            min_delay, max_delay, extra_prob, extra_max = 2.0, 4.0, 0.15, 5.0
 
-        min_delay = max(0.1, min_delay)
+        min_delay = max(0.5, min_delay)
         max_delay = max(min_delay, max_delay)
 
         delay = random.uniform(min_delay, max_delay)
         if random.random() < extra_prob:
-            delay += random.uniform(0.5, extra_max)
+            delay += random.uniform(1.0, extra_max)
 
         time.sleep(delay)
 
@@ -453,40 +459,75 @@ class SyncService:
                             logger.info(f"Error quick updating note {note_id}: {e}")
                     else:
                         # 需要获取详情(深度模式下的新笔记或缺失素材笔记)
-                        success, msg, note_detail = xhs_apis.get_note_info(note_url, cookie_str)
-                        
                         detail_saved = False
+                        rate_limited = False
                         
-                        if not success:
-                            # 检查认证错误
-                            if SyncService._handle_auth_error(msg):
-                                logger.info(f"Auth error during note detail fetch: {msg}")
-                                auth_error_msg = f"Cookie已失效,同步终止。错误: {msg}"
-                                SyncService.stop_sync()
-                                account.status = 'failed'
-                                account.error_message = auth_error_msg
-                                db.session.commit()
-                                SyncService._mark_accounts_failed(remaining_ids, auth_error_msg)
-                                break
-                            else:
-                                # 非认证错误，记录日志
-                                logger.warning(f"Failed to get note detail for {note_id}: {msg}")
-
-                        if success and note_detail:
-                            try:
-                                # 安全访问嵌套数据,防止NoneType错误
-                                data = note_detail.get('data')
-                                if data and data.get('items') and len(data['items']) > 0:
-                                    note_data = data['items'][0]
-                                    note_data['url'] = note_url
-                                    cleaned_data = handle_note_info(note_data, from_list=False)
-                                    # 深度同步获取详情后，下载所有媒体资源
-                                    SyncService._save_note(cleaned_data, download_media=True)
-                                    detail_saved = True
+                        # 带重试的详情获取
+                        for retry_attempt in range(3):
+                            if retry_attempt > 0:
+                                # 重试前等待更长时间
+                                wait_time = random.uniform(3, 6) * retry_attempt
+                                logger.info(f"Retrying note {note_id} after {wait_time:.1f}s (attempt {retry_attempt + 1}/3)")
+                                time.sleep(wait_time)
+                            
+                            success, msg, note_detail = xhs_apis.get_note_info(note_url, cookie_str)
+                            
+                            # 检查是否被限流或笔记不可用
+                            is_rate_limited = '频次异常' in str(msg) or '频繁操作' in str(msg)
+                            is_unavailable = '暂时无法浏览' in str(msg) or '笔记不存在' in str(msg)
+                            
+                            if is_rate_limited:
+                                rate_limited = True
+                                logger.warning(f"Rate limited for note {note_id}: {msg}")
+                                continue  # 重试
+                            
+                            if is_unavailable:
+                                logger.warning(f"Note {note_id} unavailable: {msg}")
+                                break  # 不重试，笔记本身有问题
+                            
+                            if not success:
+                                # 检查认证错误
+                                if SyncService._handle_auth_error(msg):
+                                    logger.info(f"Auth error during note detail fetch: {msg}")
+                                    auth_error_msg = f"Cookie已失效,同步终止。错误: {msg}"
+                                    SyncService.stop_sync()
+                                    account.status = 'failed'
+                                    account.error_message = auth_error_msg
+                                    db.session.commit()
+                                    SyncService._mark_accounts_failed(remaining_ids, auth_error_msg)
+                                    break
                                 else:
-                                    logger.warning(f"Note {note_id} has no valid data in response")
-                            except Exception as e:
-                                logger.warning(f"Error parsing note {note_id}: {e}")
+                                    # 非认证错误，记录日志
+                                    logger.warning(f"Failed to get note detail for {note_id}: {msg}")
+                                    break
+
+                            if success and note_detail:
+                                try:
+                                    # 安全访问嵌套数据,防止NoneType错误
+                                    data = note_detail.get('data')
+                                    if data and data.get('items') and len(data['items']) > 0:
+                                        note_data = data['items'][0]
+                                        note_data['url'] = note_url
+                                        cleaned_data = handle_note_info(note_data, from_list=False)
+                                        # 深度同步获取详情后，下载所有媒体资源
+                                        SyncService._save_note(cleaned_data, download_media=True)
+                                        detail_saved = True
+                                        break  # 成功，跳出重试循环
+                                    else:
+                                        # API 返回 success=True 但数据为空，可能是限流或 token 问题
+                                        logger.warning(f"Note {note_id} has no valid data in response: {msg}")
+                                        if '频次' in str(msg) or '频繁' in str(msg):
+                                            rate_limited = True
+                                            continue  # 重试
+                                        break  # 其他原因，不重试
+                                except Exception as e:
+                                    logger.warning(f"Error parsing note {note_id}: {e}")
+                                    break
+                        
+                        # 如果因为限流导致3次都失败，增加额外等待
+                        if rate_limited and not detail_saved:
+                            logger.warning(f"Rate limit hit for note {note_id}, adding extra delay")
+                            time.sleep(random.uniform(5, 10))
                         
                         # 【关键修复】如果详情获取失败，至少保存列表页的基本数据
                         # 这样封面等信息能从列表页获取，不会完全为空

@@ -77,6 +77,15 @@ def fix_notes_for_user(user_id, max_notes=None, dry_run=False):
         # 获取笔记详情
         success, msg, note_detail = xhs_apis.get_note_info(note_url, cookie_str)
         
+        print(f"  API返回: success={success}, msg={msg}")
+        if note_detail:
+            print(f"  note_detail keys: {list(note_detail.keys()) if isinstance(note_detail, dict) else 'not a dict'}")
+            data = note_detail.get('data') if isinstance(note_detail, dict) else None
+            if data:
+                print(f"  data keys: {list(data.keys())}")
+                items = data.get('items', [])
+                print(f"  items count: {len(items) if items else 0}")
+        
         if not success:
             print(f"  获取详情失败: {msg}")
             failed_count += 1
