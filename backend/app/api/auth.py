@@ -122,7 +122,7 @@ def validate_cookie_if_needed(cookie, force=False):
     was_valid = cookie.is_valid
     
     try:
-        from apis.xhs_pc_apis import XHS_Apis
+        from Spider_XHS.apis.xhs_pc_apis import XHS_Apis
         xhs_apis = XHS_Apis()
         
         # 获取解密后的 Cookie
@@ -303,7 +303,7 @@ def get_current_user():
     cookies_str = current_app.config.get('XHS_COOKIES', '')
     if cookies_str:
         try:
-            from apis.xhs_pc_apis import XHS_Apis
+            from Spider_XHS.apis.xhs_pc_apis import XHS_Apis
             xhs_apis = XHS_Apis()
             success, msg, res = xhs_apis.get_user_self_info(cookies_str)
             
@@ -361,7 +361,7 @@ def manual_cookie():
     
     # 验证 Cookie 有效性
     try:
-        from apis.xhs_pc_apis import XHS_Apis
+        from Spider_XHS.apis.xhs_pc_apis import XHS_Apis
         xhs_apis = XHS_Apis()
         
         # 先用 v1 接口验证
@@ -564,7 +564,7 @@ def manual_cookie_encrypted():
     
     # 后续流程与 manual_cookie 相同
     try:
-        from apis.xhs_pc_apis import XHS_Apis
+        from Spider_XHS.apis.xhs_pc_apis import XHS_Apis
         xhs_apis = XHS_Apis()
         
         success, msg, res = xhs_apis.get_user_self_info(cookie_str)
@@ -724,7 +724,7 @@ def debug_cookie():
         })
     
     try:
-        from apis.xhs_pc_apis import XHS_Apis
+        from Spider_XHS.apis.xhs_pc_apis import XHS_Apis
         xhs_apis = XHS_Apis()
         
         # 获取 v1 接口数据

@@ -36,7 +36,7 @@ def search_users():
         return jsonify({'error': '请先登录小红书账号'}), 401
     
     try:
-        from apis.xhs_pc_apis import XHS_Apis
+        from Spider_XHS.apis.xhs_pc_apis import XHS_Apis
         xhs_apis = XHS_Apis()
         success, msg, res = xhs_apis.search_user(keyword, cookie_str, page=1)
         
@@ -120,7 +120,7 @@ def search_notes():
         return jsonify({'error': '请先登录小红书账号'}), 401
     
     try:
-        from apis.xhs_pc_apis import XHS_Apis
+        from Spider_XHS.apis.xhs_pc_apis import XHS_Apis
         xhs_apis = XHS_Apis()
         success, msg, res = xhs_apis.search_note(keyword, cookie_str, page=page, 
                                                   sort_type_choice=sort, note_type=note_type)

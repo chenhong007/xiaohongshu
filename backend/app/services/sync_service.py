@@ -15,8 +15,9 @@ from ..extensions import db
 from ..models import Account, Note, Cookie
 from ..utils.logger import get_logger, log_sync_event
 from ..config import Config
-from xhs_utils.xhs_util import get_common_headers
+from Spider_XHS.xhs_utils.xhs_util import get_common_headers
 from .sync_log_broadcaster import sync_log_broadcaster
+from Spider_XHS.main import Data_Spider
 
 # 获取日志器
 logger = get_logger('sync')
@@ -301,22 +302,23 @@ class SyncService:
         return any(keyword in msg_lower for keyword in tokens)
 
     @staticmethod
-    def _refresh_account_xsec_token(account, xhs_apis, cookie_str):
-        """重新获取并保存账号的 xsec_token"""
-        if not account:
+    def _fetch_user_xsec_token(user_id, xhs_apis, cookie_str):
+        """动态获取用户的 xsec_token（不保存到数据库）
+        
+        用户级别的 xsec_token 用于调用 get_user_all_notes API。
+        笔记级别的 xsec_token 从 all_note_info 返回数据中获取。
+        """
+        if not user_id:
             return ''
         try:
-            success_token, msg_token, fetched_token = xhs_apis.get_user_xsec_token(account.user_id, cookie_str)
+            success_token, msg_token, fetched_token = xhs_apis.get_user_xsec_token(user_id, cookie_str)
             if success_token and fetched_token:
-                account.xsec_token = fetched_token
-                db.session.commit()
-                logger.info(f"Refreshed xsec_token for {account.user_id}")
+                logger.info(f"Fetched xsec_token for user {user_id}")
                 return fetched_token
-            logger.info(f"Failed to refresh xsec_token for {account.user_id}: {msg_token}")
+            logger.info(f"Failed to fetch xsec_token for user {user_id}: {msg_token}")
         except Exception as e:
-            logger.info(f"Exception refreshing xsec_token for {account.user_id}: {e}")
-            db.session.rollback()
-        return account.xsec_token or ''
+            logger.info(f"Exception fetching xsec_token for user {user_id}: {e}")
+        return ''
 
     @staticmethod
     def _sleep_with_jitter(sync_mode):
@@ -406,9 +408,11 @@ class SyncService:
             return
         
         try:
-            from apis.xhs_pc_apis import XHS_Apis
-            from xhs_utils.data_util import handle_note_info
+            from Spider_XHS.apis.xhs_pc_apis import XHS_Apis
+            from Spider_XHS.xhs_utils.data_util import handle_note_info
             xhs_apis = XHS_Apis()
+            # 创建 Data_Spider 实例，用于采集笔记
+            data_spider = Data_Spider()
         except Exception as e:
             error_msg = f"初始化API失败: {e}"
             logger.error(f"初始化XHS APIs失败: {e}")
@@ -463,32 +467,17 @@ class SyncService:
                 db.session.commit()
                 
                 # 构建用户URL,包含xsec_token用于API验证
-                xsec_token = account.xsec_token or ''
+                # 【重要】用户级别的 xsec_token 每次同步时动态获取，不再保存到数据库
                 warning_msg = None
-                
-                # 如果没有xsec_token,尝试获取
-                if not xsec_token:
-                    logger.info(f"No xsec_token for account {account.user_id}, attempting to fetch...")
-                    try:
-                        success_token, msg_token, fetched_token = xhs_apis.get_user_xsec_token(account.user_id, cookie_str)
-                        if success_token and fetched_token:
-                            xsec_token = fetched_token
-                            # 保存到数据库以便后续使用
-                            account.xsec_token = xsec_token
-                            db.session.commit()
-                            logger.info(f"Successfully fetched xsec_token for {account.user_id}")
-                        else:
-                            logger.info(f"Could not fetch xsec_token: {msg_token}")
-                    except Exception as e:
-                        logger.info(f"Error fetching xsec_token: {e}")
+                xsec_token = SyncService._fetch_user_xsec_token(account.user_id, xhs_apis, cookie_str)
                 
                 if xsec_token:
                     user_url = f'https://www.xiaohongshu.com/user/profile/{account.user_id}?xsec_token={xsec_token}&xsec_source=pc_search'
                 else:
                     user_url = f'https://www.xiaohongshu.com/user/profile/{account.user_id}'
-                    warning_msg = f"缺少xsec_token,可能导致同步失败"
-                    logger.info(f"Warning: No xsec_token for account {account.user_id}, sync may fail")
-                    sync_log_broadcaster.warn(f"缺少 xsec_token，可能导致同步失败", account_id=acc_id, account_name=account_name)
+                    warning_msg = f"无法获取用户xsec_token,可能导致同步失败"
+                    logger.info(f"Warning: Failed to fetch xsec_token for account {account.user_id}, sync may fail")
+                    sync_log_broadcaster.warn(f"无法获取用户 xsec_token，可能导致同步失败", account_id=acc_id, account_name=account_name)
                     if sync_mode == 'deep':
                         error_msg = "深度同步需要有效的 xsec_token，请尝试重新登录后再试"
                         sync_log_broadcaster.error(error_msg, account_id=acc_id, account_name=account_name)
@@ -499,46 +488,32 @@ class SyncService:
                 
                 # 获取用户所有笔记列表
                 success, msg, all_note_info = xhs_apis.get_user_all_notes(user_url, cookie_str)
+                
+                # 如果失败且是token错误，尝试重新获取token并重试
                 if not success and sync_mode == 'deep' and SyncService._is_xsec_token_error(msg):
-                    new_token = SyncService._refresh_account_xsec_token(account, xhs_apis, cookie_str)
+                    new_token = SyncService._fetch_user_xsec_token(account.user_id, xhs_apis, cookie_str)
                     if new_token and new_token != xsec_token:
                         xsec_token = new_token
                         user_url = f'https://www.xiaohongshu.com/user/profile/{account.user_id}?xsec_token={xsec_token}&xsec_source=pc_search'
                         success, msg, all_note_info = xhs_apis.get_user_all_notes(user_url, cookie_str)
                 
-                # 策略优化:如果获取成功但列表为空,尝试强制刷新xsec_token并重试一次
-                # 这解决了一些因token过期或无效导致看似成功但无数据的问题
+                # 策略优化:如果获取成功但列表为空,尝试重新获取xsec_token并重试一次
                 if success and not all_note_info:
                     logger.info(f"Got 0 notes for {account.user_id}, attempting to refresh xsec_token and retry...")
-                    try:
-                        # 强制重新获取 token
-                        success_token, msg_token, fetched_token = xhs_apis.get_user_xsec_token(account.user_id, cookie_str)
+                    new_token = SyncService._fetch_user_xsec_token(account.user_id, xhs_apis, cookie_str)
+                    if new_token and new_token != xsec_token:
+                        logger.info(f"Got new xsec_token: {new_token[:10]}...")
+                        xsec_token = new_token
+                        user_url = f'https://www.xiaohongshu.com/user/profile/{account.user_id}?xsec_token={xsec_token}&xsec_source=pc_search'
+                        success_retry, msg_retry, all_note_info_retry = xhs_apis.get_user_all_notes(user_url, cookie_str)
                         
-                        if success_token and fetched_token:
-                            # 即使token一样也可能是服务端状态问题,但通常不一样
-                            if fetched_token != xsec_token:
-                                logger.info(f"Refreshed xsec_token: {fetched_token[:10]}...")
-                                xsec_token = fetched_token
-                                account.xsec_token = xsec_token
-                                db.session.commit()
-                                
-                                # 使用新token重试
-                                user_url = f'https://www.xiaohongshu.com/user/profile/{account.user_id}?xsec_token={xsec_token}&xsec_source=pc_search'
-                                success_retry, msg_retry, all_note_info_retry = xhs_apis.get_user_all_notes(user_url, cookie_str)
-                                
-                                if success_retry and all_note_info_retry:
-                                    logger.info(f"Retry success! Got {len(all_note_info_retry)} notes.")
-                                    success = success_retry
-                                    msg = msg_retry
-                                    all_note_info = all_note_info_retry
-                                else:
-                                    logger.info(f"Retry result: success={success_retry}, count={len(all_note_info_retry) if all_note_info_retry else 0}")
-                            else:
-                                print("Fetched token is identical to current token, skipping retry.")
+                        if success_retry and all_note_info_retry:
+                            logger.info(f"Retry success! Got {len(all_note_info_retry)} notes.")
+                            success = success_retry
+                            msg = msg_retry
+                            all_note_info = all_note_info_retry
                         else:
-                            logger.info(f"Failed to refresh token: {msg_token}")
-                    except Exception as e:
-                        logger.info(f"Error during token refresh retry: {e}")
+                            logger.info(f"Retry result: success={success_retry}, count={len(all_note_info_retry) if all_note_info_retry else 0}")
 
                 if not success:
                     # 检查是否为认证错误
@@ -628,8 +603,8 @@ class SyncService:
                     sync_log.set_total(total)
                 
                 # 处理每个笔记
-                # 使用账号的xsec_token作为后备,如果笔记自带xsec_token则优先使用
-                account_xsec_token = account.xsec_token or ''
+                # 【重要】笔记级别的xsec_token应从get_user_all_notes返回的all_note_info中获取
+                # 参考main.py: note_url = f"https://www.xiaohongshu.com/explore/{simple_note_info['note_id']}?xsec_token={simple_note_info['xsec_token']}"
                 for idx, simple_note in enumerate(all_note_info):
                     # 检查是否停止
                     if SyncService._stop_event.is_set():
@@ -638,11 +613,13 @@ class SyncService:
 
                     # 【关键修复】兼容API返回的两种字段名:'note_id'和'id'
                     note_id = simple_note.get('note_id') or simple_note.get('id')
-                    # 优先使用笔记自带的xsec_token（由get_user_all_notes添加）,否则使用账号的
-                    note_xsec_token = simple_note.get('xsec_token') or account_xsec_token
+                    # 【关键】笔记的xsec_token从all_note_info返回数据中获取，不使用账号级别的token作为后备
+                    note_xsec_token = simple_note.get('xsec_token', '')
                     if note_xsec_token:
                         note_url = f"https://www.xiaohongshu.com/explore/{note_id}?xsec_token={note_xsec_token}&xsec_source=pc_search"
                     else:
+                        # 如果笔记没有xsec_token，记录警告
+                        logger.warning(f"Note {note_id} missing xsec_token from all_note_info")
                         note_url = f"https://www.xiaohongshu.com/explore/{note_id}"
                     
                     need_fetch_detail = False
@@ -709,7 +686,8 @@ class SyncService:
                                 logger.info(f"Retrying note {note_id} after {wait_time:.1f}s (attempt {retry_attempt + 1}/3)")
                                 time.sleep(wait_time)
                             
-                            success, msg, note_detail = xhs_apis.get_note_info(note_url, cookie_str)
+                            # 使用 Data_Spider 采集笔记详情（内部已调用 handle_note_info）
+                            success, msg, note_info = data_spider.spider_note(note_url, cookie_str)
                             last_error_msg = msg
                             
                             # 检查是否被限流或笔记不可用
@@ -785,25 +763,23 @@ class SyncService:
                                     SyncService._mark_accounts_failed(remaining_ids, auth_error_msg)
                                     break
                                 elif SyncService._is_xsec_token_error(msg):
+                                    # 【重要】笔记的xsec_token来自get_user_all_notes返回数据，失效时不应尝试刷新账号token
+                                    # 参考main.py: 笔记token应从all_note_info中获取
                                     sync_log_broadcaster.warn(
-                                        f"xsec_token 失效，尝试刷新",
+                                        f"笔记 xsec_token 失效，跳过该笔记",
                                         account_id=acc_id,
                                         account_name=account_name,
                                         note_id=note_id
                                     )
-                                    # 记录Token刷新日志
+                                    # 记录Token失效日志
                                     if sync_log:
                                         sync_log.add_issue(
                                             SyncLogCollector.TYPE_TOKEN_REFRESH,
                                             note_id=note_id,
-                                            message=f"xsec_token失效，尝试刷新: {msg}"
+                                            message=f"笔记xsec_token失效（来自all_note_info）: {msg}"
                                         )
-                                    new_note_token = SyncService._refresh_account_xsec_token(account, xhs_apis, cookie_str)
-                                    if new_note_token and new_note_token != note_xsec_token:
-                                        note_xsec_token = new_note_token
-                                        note_url = f"https://www.xiaohongshu.com/explore/{note_id}?xsec_token={note_xsec_token}&xsec_source=pc_search"
-                                        simple_note['xsec_token'] = note_xsec_token
-                                        continue
+                                    logger.warning(f"Note {note_id} xsec_token invalid, skipping: {msg}")
+                                    break  # 跳出重试循环，继续处理下一个笔记
                                 else:
                                     # 非认证错误，记录日志
                                     logger.warning(f"Failed to get note detail for {note_id}: {msg}")
@@ -822,61 +798,47 @@ class SyncService:
                                         )
                                     break
 
-                            if success and note_detail:
+                            # spider_note 返回的 note_info 已经是处理过的数据
+                            if success and note_info:
                                 try:
-                                    # 安全访问嵌套数据,防止NoneType错误
-                                    data = note_detail.get('data')
+                                    # 补充 xsec_token 字段（spider_note 内部的 handle_note_info 没有传递此参数）
+                                    note_info['xsec_token'] = note_xsec_token
                                     
-                                    # 【调试日志】打印 API 返回的完整结构
-                                    logger.info(f"[深度同步调试] note_id={note_id}, API返回 data keys: {list(data.keys()) if data else 'None'}")
+                                    # 【调试日志】打印清洗后的关键字段
+                                    logger.info(f"[深度同步调试] note_id={note_id}, note_info: upload_time={note_info.get('upload_time')}, collected_count={note_info.get('collected_count')}, comment_count={note_info.get('comment_count')}")
                                     
-                                    if data and data.get('items') and len(data['items']) > 0:
-                                        note_data = data['items'][0]
-                                        
-                                        # 【调试日志】打印 note_card 的关键字段
-                                        note_card = note_data.get('note_card', {})
-                                        logger.info(f"[深度同步调试] note_id={note_id}, note_card keys: {list(note_card.keys())}")
-                                        logger.info(f"[深度同步调试] note_id={note_id}, note_card.time={note_card.get('time')}, interact_info={note_card.get('interact_info')}")
-                                        
-                                        note_data['url'] = note_url
-                                        # 传入笔记级别的xsec_token以便存储
-                                        cleaned_data = handle_note_info(note_data, from_list=False, xsec_token=note_xsec_token)
-                                        
-                                        # 【调试日志】打印清洗后的关键字段
-                                        logger.info(f"[深度同步调试] note_id={note_id}, cleaned_data: upload_time={cleaned_data.get('upload_time')}, collected_count={cleaned_data.get('collected_count')}, comment_count={cleaned_data.get('comment_count')}")
-                                        
-                                        # 深度同步获取详情后，下载所有媒体资源
-                                        SyncService._save_note(cleaned_data, download_media=True)
-                                        detail_saved = True
-                                        # 【关键】记录成功，减少限流计数
-                                        SyncService._record_success()
-                                        # 记录成功
-                                        if sync_log:
-                                            sync_log.record_success()
-                                        logger.info(f"[深度同步] 笔记 {note_id} 详情获取成功，含发布时间: {cleaned_data.get('upload_time', '未知')}")
-                                        break  # 成功，跳出重试循环
-                                    else:
-                                        # API 返回 success=True 但数据为空，可能是限流或 token 问题
-                                        logger.warning(f"Note {note_id} has no valid data in response: {msg}")
-                                        if '频次' in str(msg) or '频繁' in str(msg):
-                                            rate_limited = True
-                                            if sync_log:
-                                                sync_log.add_issue(
-                                                    SyncLogCollector.TYPE_RATE_LIMITED,
-                                                    note_id=note_id,
-                                                    message=f"API返回空数据: {msg}"
-                                                )
-                                            continue  # 重试
-                                        break  # 其他原因，不重试
+                                    # 深度同步获取详情后，下载所有媒体资源
+                                    SyncService._save_note(note_info, download_media=True)
+                                    detail_saved = True
+                                    # 【关键】记录成功，减少限流计数
+                                    SyncService._record_success()
+                                    # 记录成功
+                                    if sync_log:
+                                        sync_log.record_success()
+                                    logger.info(f"[深度同步] 笔记 {note_id} 详情获取成功，含发布时间: {note_info.get('upload_time', '未知')}")
+                                    break  # 成功，跳出重试循环
                                 except Exception as e:
-                                    logger.warning(f"Error parsing note {note_id}: {e}")
+                                    logger.warning(f"Error saving note {note_id}: {e}")
                                     if sync_log:
                                         sync_log.add_issue(
                                             SyncLogCollector.TYPE_FETCH_FAILED,
                                             note_id=note_id,
-                                            message=f"解析错误: {str(e)}"
+                                            message=f"保存错误: {str(e)}"
                                         )
                                     break
+                            else:
+                                # API 返回 success=True 但数据为空，可能是限流或 token 问题
+                                logger.warning(f"Note {note_id} has no valid data in response: {msg}")
+                                if '频次' in str(msg) or '频繁' in str(msg):
+                                    rate_limited = True
+                                    if sync_log:
+                                        sync_log.add_issue(
+                                            SyncLogCollector.TYPE_RATE_LIMITED,
+                                            note_id=note_id,
+                                            message=f"API返回空数据: {msg}"
+                                        )
+                                    continue  # 重试
+                                break  # 其他原因，不重试
                         
                         # 如果因为限流导致3次都失败，增加额外等待
                         if rate_limited and not detail_saved:

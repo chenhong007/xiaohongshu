@@ -24,7 +24,7 @@ from app import create_app
 from app.extensions import db
 from app.models import Note, Account, Cookie
 from app.services.sync_service import SyncService
-from xhs_utils.data_util import handle_note_info
+from Spider_XHS.xhs_utils.data_util import handle_note_info
 
 # 进度文件
 PROGRESS_FILE = 'fix_progress.json'
@@ -239,7 +239,7 @@ def fix_notes_for_user(user_id, xhs_apis, cookie_str, progress, max_notes=None,
 
 def fix_all_users(max_notes_per_user=None, resume=True, detail_mode=False):
     """修复所有用户的笔记数据（可选详情模式）"""
-    from apis.xhs_pc_apis import XHS_Apis
+    from Spider_XHS.apis.xhs_pc_apis import XHS_Apis
     
     xhs_apis = XHS_Apis()
     cookie_str = get_cookie_str()
@@ -442,7 +442,7 @@ if __name__ == '__main__':
             print(f"预计时间: {total * per_note_seconds / 60:.1f} 分钟 （{speed_hint}）")
         elif args.user_id:
             # 处理单个用户
-            from apis.xhs_pc_apis import XHS_Apis
+            from Spider_XHS.apis.xhs_pc_apis import XHS_Apis
             xhs_apis = XHS_Apis()
             cookie_str = get_cookie_str()
             if cookie_str:

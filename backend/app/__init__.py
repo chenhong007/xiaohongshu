@@ -34,9 +34,9 @@ def migrate_database(db_path):
         existing_columns = [row[1] for row in cursor.fetchall()]
         
         # 需要添加的列
+        # 注意: xsec_token 已从 accounts 表移除，用户级别的 token 每次同步时动态获取
         columns_to_add = {
             'red_id': 'VARCHAR(64)',
-            'xsec_token': 'VARCHAR(256)',
             'desc': 'TEXT',
             'fans': 'INTEGER DEFAULT 0',
             'follows': 'INTEGER DEFAULT 0',

@@ -17,7 +17,7 @@ from app import create_app
 from app.models import Note
 from app.extensions import db
 from app.config import Config
-from xhs_utils.xhs_util import get_common_headers
+from Spider_XHS.xhs_utils.xhs_util import get_common_headers
 
 
 def fix_missing_covers(limit=None, dry_run=False, mode='all'):

@@ -15,7 +15,7 @@ class Account(db.Model):
     name = db.Column(db.String(128))
     avatar = db.Column(db.String(512))
     red_id = db.Column(db.String(64))  # 小红书号
-    xsec_token = db.Column(db.String(256))  # xsec_token 用于API请求验证
+    # xsec_token 已移除：用户级别的 token 现在每次同步时动态获取，笔记级别的 token 从 all_note_info 获取
     desc = db.Column(db.Text)  # 简介
     fans = db.Column(db.Integer, default=0)  # 粉丝数
     follows = db.Column(db.Integer, default=0)  # 关注数
@@ -65,7 +65,6 @@ class Account(db.Model):
             'name': self.name,
             'avatar': self.avatar,
             'red_id': self.red_id,
-            'xsec_token': self.xsec_token,
             'desc': self.desc,
             'fans': self.fans,
             'follows': self.follows,

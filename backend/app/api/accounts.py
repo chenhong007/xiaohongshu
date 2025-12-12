@@ -44,7 +44,6 @@ def add_account():
         - user_id: 用户ID (必填)
         - name: 用户名
         - avatar: 头像URL
-        - xsec_token: xsec_token
         - red_id: 小红书号
         - desc: 简介
         - fans: 粉丝数
@@ -60,12 +59,6 @@ def add_account():
     # 检查是否已存在
     existing = Account.query.filter_by(user_id=user_id).first()
     if existing:
-        # 如果已存在，更新 xsec_token（token 可能会更新）
-        xsec_token = data.get('xsec_token')
-        if xsec_token:
-            existing.xsec_token = xsec_token
-            db.session.commit()
-            logger.info(f"账号 {user_id} 已存在，更新了 xsec_token")
         return ApiResponse.error('该账号已添加过', 409, 'DUPLICATE_ACCOUNT')
     
     # 创建新账号
@@ -75,7 +68,6 @@ def add_account():
             name=sanitize_string(data.get('name'), 128) or user_id,
             avatar=sanitize_string(data.get('avatar'), 512),
             red_id=sanitize_string(data.get('red_id'), 64),
-            xsec_token=sanitize_string(data.get('xsec_token'), 256),
             desc=sanitize_string(data.get('desc'), 1000),
             fans=int(data.get('fans', 0)) if data.get('fans') else 0,
         )

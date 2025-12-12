@@ -158,22 +158,55 @@ def diagnose_rate_limit():
     
     # 初始化 API
     try:
-        from apis.xhs_pc_apis import XHS_Apis
+        from Spider_XHS.apis.xhs_pc_apis import XHS_Apis
         xhs_apis = XHS_Apis()
         print("✅ API 初始化成功")
     except Exception as e:
         print(f"❌ API 初始化失败: {e}")
         return
     
-    # 尝试获取一个有详情的笔记（已知成功的）
-    test_note_id = "693804f3000000000d03c410"  # 已知有详情的笔记
-    test_url = f"https://www.xiaohongshu.com/explore/{test_note_id}"
-    
+    def _is_rate_limited(message: str) -> bool:
+        s = str(message)
+        return ('频次异常' in s) or ('频繁操作' in s)
+
+    def _has_items(res_json: dict) -> bool:
+        if not isinstance(res_json, dict):
+            return False
+        data = res_json.get('data')
+        return bool(isinstance(data, dict) and data.get('items'))
+
+    def _get_code(res_json: dict):
+        if isinstance(res_json, dict):
+            return res_json.get('code')
+        return None
+
+    # 诊断说明：
+    # - 小红书该接口可能出现 success=True 但 code!=0 且 data 为空
+    # - 例如 code=300031 + “当前笔记暂时无法浏览” 常见于缺失/错误 xsec_token（不一定是限流）
+
+    # 优先从数据库中挑一条带 xsec_token 的笔记作为测试样本（更稳定）
+    test_url = None
+    test_note_id = None
+    try:
+        sample = Note.query.filter(Note.xsec_token.isnot(None)).filter(Note.xsec_token != '').first()
+        if sample:
+            test_note_id = sample.note_id
+            test_url = f"https://www.xiaohongshu.com/explore/{sample.note_id}?xsec_token={sample.xsec_token}&xsec_source=pc_search"
+    except Exception:
+        # 数据库不可用/模型异常时，降级走固定样本
+        test_url = None
+
+    # 降级：固定 note_id（可能需要 xsec_token 才能成功）
+    if not test_url:
+        test_note_id = "693804f3000000000d03c410"
+        test_url = f"https://www.xiaohongshu.com/explore/{test_note_id}"
+
     print(f"\n🧪 测试请求（笔记 ID: {test_note_id}）...")
-    
+
     success, msg, result = xhs_apis.get_note_info(test_url, cookie_str)
-    
-    if '频次异常' in str(msg) or '频繁操作' in str(msg):
+    code = _get_code(result)
+
+    if _is_rate_limited(msg):
         print(f"❌ 当前处于限流状态: {msg}")
         print("\n💡 建议:")
         print("   1. 等待 2-6 小时后再试")
@@ -183,10 +216,16 @@ def diagnose_rate_limit():
         print(f"⚠️  请求失败: {msg}")
         if '登录' in str(msg) or 'unauthorized' in str(msg).lower():
             print("   可能是 Cookie 已过期，请重新登录")
-    else:
+    elif code == 0 and _has_items(result):
         print("✅ 请求成功，当前未被限流！")
-        if result and result.get('data', {}).get('items'):
-            print("   可以正常获取详情数据")
+        print("   可以正常获取详情数据")
+    else:
+        # success=True 但拿不到 items：通常不是“频率限流”，而是内容不可见/风控/缺 token
+        print("⚠️  请求返回但无法获取详情数据")
+        print(f"   success={success}, code={code}, msg={msg}")
+        if code == 300031 or '暂时无法浏览' in str(msg):
+            print("💡 提示: 该错误常见于缺失/错误 xsec_token（也可能是笔记不可见）。")
+            print("   建议：使用带 xsec_token 的笔记 URL 测试，或在修复时自动补齐 token 后重试。")
     
     # 检查账号的 xsec_token
     print("\n📊 账号 xsec_token 状态:")
@@ -212,7 +251,7 @@ def sleep_with_jitter():
 
 def fix_note_detail(note, xhs_apis, cookie_str, account_xsec_token):
     """修复单个笔记的详情数据"""
-    from xhs_utils.data_util import handle_note_info
+    from Spider_XHS.xhs_utils.data_util import handle_note_info
     
     note_id = note.note_id
     
@@ -223,6 +262,8 @@ def fix_note_detail(note, xhs_apis, cookie_str, account_xsec_token):
     else:
         note_url = f"https://www.xiaohongshu.com/explore/{note_id}"
     
+    tried_fetch_user_token = False
+
     # 带重试的详情获取
     for attempt in range(MAX_RETRIES):
         if attempt > 0:
@@ -231,6 +272,7 @@ def fix_note_detail(note, xhs_apis, cookie_str, account_xsec_token):
             time.sleep(wait_time)
         
         success, msg, note_detail = xhs_apis.get_note_info(note_url, cookie_str)
+        code = note_detail.get('code') if isinstance(note_detail, dict) else None
         
         # 检查限流
         if '频次异常' in str(msg) or '频繁操作' in str(msg):
@@ -241,9 +283,27 @@ def fix_note_detail(note, xhs_apis, cookie_str, account_xsec_token):
                 print(f"    ❌ 达到最大重试次数，跳过")
                 return False
         
-        # 检查笔记不可用
-        if '暂时无法浏览' in str(msg) or '笔记不存在' in str(msg):
+        # 检查“无法浏览/不存在”
+        # 注意：code=300031 + “当前笔记暂时无法浏览” 很多时候是缺失/错误 xsec_token（并非笔记真的不存在）
+        if '笔记不存在' in str(msg):
             print(f"    ⚠️  笔记不可用: {msg}")
+            return False
+        if ('暂时无法浏览' in str(msg)) or (code == 300031):
+            # 若当前未带 xsec_token，则尝试为该用户动态获取 xsec_token 后再重试一次
+            if not xsec_token and not tried_fetch_user_token:
+                tried_fetch_user_token = True
+                try:
+                    ok, m2, user_token = xhs_apis.get_user_xsec_token(note.user_id, cookie_str)
+                    if ok and user_token:
+                        xsec_token = user_token
+                        note_url = f"https://www.xiaohongshu.com/explore/{note_id}?xsec_token={xsec_token}&xsec_source=pc_search"
+                        print(f"    🔑 获取到用户 xsec_token，重试获取详情...")
+                        continue
+                    else:
+                        print(f"    ⚠️  获取用户 xsec_token 失败: {m2}")
+                except Exception as e:
+                    print(f"    ⚠️  获取用户 xsec_token 异常: {e}")
+            print(f"    ⚠️  笔记不可用或仍无法浏览: {msg}")
             return False
         
         if not success:
@@ -252,7 +312,7 @@ def fix_note_detail(note, xhs_apis, cookie_str, account_xsec_token):
                 continue
             return False
         
-        if success and note_detail:
+        if success and note_detail and isinstance(note_detail, dict):
             try:
                 data = note_detail.get('data')
                 if data and data.get('items') and len(data['items']) > 0:
@@ -322,7 +382,7 @@ def fix_missing_data(user_id=None, limit=None, dry_run=False):
     
     # 初始化 API
     try:
-        from apis.xhs_pc_apis import XHS_Apis
+        from Spider_XHS.apis.xhs_pc_apis import XHS_Apis
         xhs_apis = XHS_Apis()
         print("✅ API 初始化成功")
     except Exception as e:
