@@ -31,5 +31,10 @@ RUN mkdir -p datas/media_datas datas/excel_datas
 EXPOSE 8000
 
 # 使用 gunicorn 启动应用
-CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "4", "--timeout", "120", "run:app"]
+# 【性能优化】使用 gthread worker 支持多线程并发
+# - workers: 进程数（建议 CPU 核数 * 2 + 1）
+# - threads: 每个进程的线程数
+# - timeout: 请求超时时间
+# - worker-class: 使用 gthread 支持多线程处理请求
+CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "2", "--threads", "4", "--worker-class", "gthread", "--timeout", "120", "run:app"]
 

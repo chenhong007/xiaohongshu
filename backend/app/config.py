@@ -39,6 +39,16 @@ class Config:
     
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     
+    # 【性能优化】SQLite 引擎配置
+    # WAL 模式允许读写并发，大幅提高性能
+    SQLALCHEMY_ENGINE_OPTIONS = {
+        'connect_args': {
+            'check_same_thread': False,  # 允许多线程访问
+            'timeout': 30,  # 等待锁的超时时间（秒）
+        },
+        'pool_pre_ping': True,  # 连接前检查连接有效性
+    }
+    
     # ==================== CORS 配置 ====================
     # 允许的跨域来源（逗号分隔）
     CORS_ORIGINS = os.environ.get(

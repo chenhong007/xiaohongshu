@@ -684,7 +684,7 @@ class SyncService:
                                     if cleaned_data['liked_count'] is not None:
                                         existing_note.liked_count = cleaned_data['liked_count']
                                     existing_note.last_updated = datetime.utcnow()
-                                    db.session.commit()
+                                    # 【性能优化】不立即提交，由主循环统一批量提交
                                     # 记录跳过（已有完整数据）
                                     if sync_log:
                                         sync_log.record_skipped()
@@ -921,7 +921,12 @@ class SyncService:
                     # 但为了界面显示准确,如果total为0,progress设为100
                     account.loaded_msgs = idx + 1
                     account.progress = int(((idx + 1) / total) * 100) if total > 0 else 100
-                    db.session.commit()
+                    
+                    # 【性能优化】减少数据库写入频率，避免 SQLite 锁阻塞 API 请求
+                    # 每处理 5 条笔记或最后一条时才提交，大幅减少锁定时间
+                    should_commit = (idx + 1) % 5 == 0 or idx == total - 1
+                    if should_commit:
+                        db.session.commit()
                     
                     # 极速模式下不需要sleep
                     if sync_mode == 'fast':

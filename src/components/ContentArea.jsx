@@ -447,10 +447,12 @@ export const ContentArea = ({
       ).join(', ');
       console.log(`[同步调试] 正在处理 ${processingAccounts.length} 个账号:`, summary);
       
+      // 【性能优化】增加轮询间隔到 4 秒，减少对后端的请求压力
+      // 深度同步每条笔记需要 30-60 秒，4 秒轮询完全够用
       const timer = setInterval(() => {
         // 轮询时静默刷新，不输出日志（减少噪音）
         fetchAccounts(true);
-      }, 2000);
+      }, 4000);
       return () => {
         console.log('[同步调试] 停止轮询');
         clearInterval(timer);

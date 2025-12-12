@@ -152,6 +152,18 @@ def create_app(config_class=None):
     # 创建数据库表
     with app.app_context():
         db.create_all()
+        
+        # 【性能优化】启用 SQLite WAL 模式
+        # WAL 模式允许读写并发，可以大幅减少深度同步时的锁等待
+        if 'sqlite' in db_uri:
+            try:
+                db.session.execute(db.text('PRAGMA journal_mode=WAL'))
+                db.session.execute(db.text('PRAGMA synchronous=NORMAL'))
+                db.session.execute(db.text('PRAGMA busy_timeout=30000'))  # 30秒超时
+                db.session.commit()
+                logger.info("SQLite WAL 模式已启用")
+            except Exception as e:
+                logger.warning(f"启用 SQLite WAL 模式失败: {e}")
     
     # 注册错误处理
     register_error_handlers(app)
