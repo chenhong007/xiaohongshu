@@ -3,6 +3,7 @@
 """
 import json
 import os
+import sys
 import time
 import random
 import threading
@@ -10,6 +11,11 @@ from datetime import datetime
 from urllib.parse import urlparse
 from flask import current_app
 import requests
+
+# 将 Spider_XHS 目录添加到 sys.path，解决其内部相对导入问题
+_spider_xhs_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'Spider_XHS')
+if _spider_xhs_path not in sys.path:
+    sys.path.insert(0, _spider_xhs_path)
 
 from ..extensions import db
 from ..models import Account, Note, Cookie
