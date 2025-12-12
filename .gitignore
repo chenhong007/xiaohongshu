@@ -4,20 +4,6 @@ Spider_XHS
 backend/xhs_data.db
 *.pyc
 *.log
-
-# Python 虚拟环境
-.venv/
-venv/
-backend/.venv/
-
-# 媒体文件 - 不跟踪下载的图片/视频
-*.jpg
-*.jpeg
-*.png
-*.gif
-*.mp4
-*.webp
-backend/datas/media_datas/
 # 部署版本记录（本地状态）
 .deploy_version
 # SSL 证书和私钥 - 绝对不要提交！
@@ -26,6 +12,8 @@ backend/datas/media_datas/
 *.crt
 *.p12
 *.pfx
+*.png
+*.jpg
 
 # Let's Encrypt / Certbot
 nginx-proxy/certbot/conf/
