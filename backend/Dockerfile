@@ -27,6 +27,10 @@ COPY . .
 # 创建数据目录
 RUN mkdir -p datas/media_datas datas/excel_datas
 
+# 创建 static 目录软链接，解决 Spider_XHS/xhs_utils/xhs_util.py 中相对路径问题
+# xhs_util.py 会尝试 ../static/xhs_xs_xsc_56.js 或 static/xhs_xs_xsc_56.js
+RUN ln -sf /app/Spider_XHS/static /app/static
+
 # 暴露端口
 EXPOSE 8000
 
