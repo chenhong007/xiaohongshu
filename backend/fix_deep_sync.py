@@ -456,12 +456,10 @@ def fix_missing_data(user_id=None, limit=None, dry_run=False):
         print("\n按 Ctrl+C 可随时中断（进度已保存）")
         time.sleep(3)
     
-    # 获取账号的 xsec_token 映射
+    # 注意：Account 模型已移除 xsec_token 字段
+    # 用户级别 token 现在通过 fetch_user_xsec_token() 动态获取
+    # 笔记级别 token 存储在 Note.xsec_token 中
     account_tokens = {}
-    accounts = Account.query.all()
-    for acc in accounts:
-        if acc.xsec_token:
-            account_tokens[acc.user_id] = acc.xsec_token
     
     # 开始修复
     success_count = 0

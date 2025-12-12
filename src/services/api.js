@@ -163,7 +163,7 @@ class ApiService {
     }
     
     // 检测常见的 Cookie 失效标志
-    const invalidKeywords = ['cookie', '登录', '未授权', 'unauthorized', 'auth', '失效', '过期'];
+    const invalidKeywords = ['cookie', '登录', '未授权', 'unauthorized', 'auth', '失效', '过期', '凭据不合法', '凭据无效', '10062'];
     const errorMsg = (error.message || '').toLowerCase();
     const dataMsg = JSON.stringify(data || {}).toLowerCase();
     

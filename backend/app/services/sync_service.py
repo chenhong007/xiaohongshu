@@ -281,7 +281,7 @@ class SyncService:
     @staticmethod
     def _handle_auth_error(msg):
         """检查错误信息是否为认证错误,如果是则标记Cookie失效"""
-        auth_errors = ['未登录', '登录已过期', '需要登录', '401', '403', 'Unauthorized']
+        auth_errors = ['未登录', '登录已过期', '需要登录', '401', '403', 'Unauthorized', '凭据不合法', '凭据无效', '10062']
         if any(error in str(msg) for error in auth_errors):
             logger.warning(f"检测到认证错误: {msg},正在标记Cookie失效...")
             try:
