@@ -53,6 +53,56 @@ def get_cookie_str():
         return cookie.get_cookie_str()
     return None
 
+
+def fetch_user_xsec_token(user_id, xhs_apis, cookie_str):
+    """动态获取用户的 xsec_token
+    
+    通过搜索用户昵称来获取带 xsec_token 的用户数据。
+    """
+    if not user_id:
+        return ''
+    try:
+        # 步骤1：先获取用户信息，获取昵称用于搜索
+        success_info, msg_info, user_info = xhs_apis.get_user_info(user_id, cookie_str)
+        if not success_info or not user_info:
+            print(f"    获取用户信息失败: {msg_info}")
+            return ''
+        
+        # 从返回的用户信息中提取昵称
+        basic_info = user_info.get('data', {}).get('basic_info', {})
+        nickname = basic_info.get('nickname', '')
+        
+        if not nickname:
+            print(f"    用户 {user_id} 没有昵称")
+            return ''
+        
+        # 步骤2：使用昵称搜索用户，获取包含 xsec_token 的结果
+        success_search, msg_search, search_res = xhs_apis.search_user(nickname, cookie_str, page=1)
+        if not success_search or not search_res:
+            print(f"    搜索用户 '{nickname}' 失败: {msg_search}")
+            return ''
+        
+        # 步骤3：从搜索结果中匹配 user_id，获取 xsec_token
+        users = search_res.get('data', {}).get('users', [])
+        for user in users:
+            found_user_id = (user.get('user_id') or 
+                           user.get('id') or 
+                           user.get('userid') or 
+                           user.get('userId'))
+            if found_user_id == user_id:
+                xsec_token = user.get('xsec_token', '')
+                if xsec_token:
+                    print(f"  ✓ xsec_token 已获取")
+                    return xsec_token
+                else:
+                    print(f"    用户 {user_id} 在搜索结果中但无 xsec_token")
+                    return ''
+        
+        print(f"    用户 {user_id} 未在搜索结果中找到")
+    except Exception as e:
+        print(f"    获取 xsec_token 异常: {e}")
+    return ''
+
 def load_progress():
     """加载进度"""
     if os.path.exists(PROGRESS_FILE):
@@ -115,18 +165,9 @@ def fix_notes_for_user(user_id, xhs_apis, cookie_str, progress, max_notes=None,
     # 刷新用户的 xsec_token
     print(f"  正在刷新 xsec_token...")
     
-    try:
-        success_token, msg_token, fetched_token = xhs_apis.get_user_xsec_token(user_id, cookie_str)
-        if success_token and fetched_token:
-            xsec_token = fetched_token
-            if account:
-                account.xsec_token = xsec_token
-                db.session.commit()
-            print(f"  ✓ xsec_token 已刷新")
-        else:
-            xsec_token = account.xsec_token if account else ''
-    except Exception as e:
-        xsec_token = account.xsec_token if account else ''
+    xsec_token = fetch_user_xsec_token(user_id, xhs_apis, cookie_str)
+    if not xsec_token:
+        print(f"  ⚠️  无法获取 xsec_token，尝试继续同步...")
     
     time.sleep(random.uniform(0.5, 1))
     

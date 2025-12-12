@@ -313,15 +313,50 @@ class SyncService:
         
         用户级别的 xsec_token 用于调用 get_user_all_notes API。
         笔记级别的 xsec_token 从 all_note_info 返回数据中获取。
+        
+        实现方式：通过搜索用户昵称来获取带 xsec_token 的用户数据。
         """
         if not user_id:
             return ''
         try:
-            success_token, msg_token, fetched_token = xhs_apis.get_user_xsec_token(user_id, cookie_str)
-            if success_token and fetched_token:
-                logger.info(f"Fetched xsec_token for user {user_id}")
-                return fetched_token
-            logger.info(f"Failed to fetch xsec_token for user {user_id}: {msg_token}")
+            # 步骤1：先获取用户信息，获取昵称用于搜索
+            success_info, msg_info, user_info = xhs_apis.get_user_info(user_id, cookie_str)
+            if not success_info or not user_info:
+                logger.info(f"Failed to get user info for {user_id}: {msg_info}")
+                return ''
+            
+            # 从返回的用户信息中提取昵称
+            basic_info = user_info.get('data', {}).get('basic_info', {})
+            nickname = basic_info.get('nickname', '')
+            
+            if not nickname:
+                logger.info(f"No nickname found for user {user_id}")
+                return ''
+            
+            # 步骤2：使用昵称搜索用户，获取包含 xsec_token 的结果
+            success_search, msg_search, search_res = xhs_apis.search_user(nickname, cookie_str, page=1)
+            if not success_search or not search_res:
+                logger.info(f"Failed to search user '{nickname}': {msg_search}")
+                return ''
+            
+            # 步骤3：从搜索结果中匹配 user_id，获取 xsec_token
+            users = search_res.get('data', {}).get('users', [])
+            for user in users:
+                # 检查多种可能的 user_id 字段名
+                found_user_id = (user.get('user_id') or 
+                                user.get('id') or 
+                                user.get('userid') or 
+                                user.get('userId'))
+                if found_user_id == user_id:
+                    xsec_token = user.get('xsec_token', '')
+                    if xsec_token:
+                        logger.info(f"Fetched xsec_token for user {user_id} via search")
+                        return xsec_token
+                    else:
+                        logger.info(f"User {user_id} found in search but no xsec_token")
+                        return ''
+            
+            logger.info(f"User {user_id} not found in search results for '{nickname}'")
         except Exception as e:
             logger.info(f"Exception fetching xsec_token for user {user_id}: {e}")
         return ''

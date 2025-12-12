@@ -45,6 +45,56 @@ MAX_RETRIES = 5       # 最大重试次数
 RETRY_DELAY_BASE = 10 # 重试基础延迟
 
 
+def fetch_user_xsec_token(user_id, xhs_apis, cookie_str):
+    """动态获取用户的 xsec_token
+    
+    通过搜索用户昵称来获取带 xsec_token 的用户数据。
+    """
+    if not user_id:
+        return ''
+    try:
+        # 步骤1：先获取用户信息，获取昵称用于搜索
+        success_info, msg_info, user_info = xhs_apis.get_user_info(user_id, cookie_str)
+        if not success_info or not user_info:
+            print(f"    获取用户信息失败: {msg_info}")
+            return ''
+        
+        # 从返回的用户信息中提取昵称
+        basic_info = user_info.get('data', {}).get('basic_info', {})
+        nickname = basic_info.get('nickname', '')
+        
+        if not nickname:
+            print(f"    用户 {user_id} 没有昵称")
+            return ''
+        
+        # 步骤2：使用昵称搜索用户，获取包含 xsec_token 的结果
+        success_search, msg_search, search_res = xhs_apis.search_user(nickname, cookie_str, page=1)
+        if not success_search or not search_res:
+            print(f"    搜索用户 '{nickname}' 失败: {msg_search}")
+            return ''
+        
+        # 步骤3：从搜索结果中匹配 user_id，获取 xsec_token
+        users = search_res.get('data', {}).get('users', [])
+        for user in users:
+            found_user_id = (user.get('user_id') or 
+                           user.get('id') or 
+                           user.get('userid') or 
+                           user.get('userId'))
+            if found_user_id == user_id:
+                xsec_token = user.get('xsec_token', '')
+                if xsec_token:
+                    print(f"    ✓ 获取到 xsec_token")
+                    return xsec_token
+                else:
+                    print(f"    用户 {user_id} 在搜索结果中但无 xsec_token")
+                    return ''
+        
+        print(f"    用户 {user_id} 未在搜索结果中找到")
+    except Exception as e:
+        print(f"    获取 xsec_token 异常: {e}")
+    return ''
+
+
 def get_missing_notes_query(user_id=None):
     """构建缺失深度数据的笔记查询"""
     # 缺失的条件：upload_time 为空 或 collected_count/comment_count/share_count 都为0
@@ -292,17 +342,14 @@ def fix_note_detail(note, xhs_apis, cookie_str, account_xsec_token):
             # 若当前未带 xsec_token，则尝试为该用户动态获取 xsec_token 后再重试一次
             if not xsec_token and not tried_fetch_user_token:
                 tried_fetch_user_token = True
-                try:
-                    ok, m2, user_token = xhs_apis.get_user_xsec_token(note.user_id, cookie_str)
-                    if ok and user_token:
-                        xsec_token = user_token
-                        note_url = f"https://www.xiaohongshu.com/explore/{note_id}?xsec_token={xsec_token}&xsec_source=pc_search"
-                        print(f"    🔑 获取到用户 xsec_token，重试获取详情...")
-                        continue
-                    else:
-                        print(f"    ⚠️  获取用户 xsec_token 失败: {m2}")
-                except Exception as e:
-                    print(f"    ⚠️  获取用户 xsec_token 异常: {e}")
+                user_token = fetch_user_xsec_token(note.user_id, xhs_apis, cookie_str)
+                if user_token:
+                    xsec_token = user_token
+                    note_url = f"https://www.xiaohongshu.com/explore/{note_id}?xsec_token={xsec_token}&xsec_source=pc_search"
+                    print(f"    🔑 获取到用户 xsec_token，重试获取详情...")
+                    continue
+                else:
+                    print(f"    ⚠️  获取用户 xsec_token 失败")
             print(f"    ⚠️  笔记不可用或仍无法浏览: {msg}")
             return False
         
