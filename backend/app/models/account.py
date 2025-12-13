@@ -28,6 +28,7 @@ class Account(db.Model):
     progress = db.Column(db.Integer, default=0)
     status = db.Column(db.String(32), default='pending')  # pending, processing, completed, failed
     error_message = db.Column(db.Text)  # 同步失败时的错误信息
+    sync_heartbeat = db.Column(db.DateTime)  # 同步心跳时间，用于检测僵死任务
     
     # 同步日志 (JSON格式，存储深度同步过程中的详细异常信息)
     # 结构: {
@@ -76,6 +77,7 @@ class Account(db.Model):
             'status': self.status,
             'error_message': self.error_message,
             'sync_logs': sync_logs_data,  # 同步日志详情
+            'sync_heartbeat': self.sync_heartbeat.isoformat() + 'Z' if self.sync_heartbeat else None,
             'created_at': self.created_at.isoformat() + 'Z' if self.created_at else None,
         }
     

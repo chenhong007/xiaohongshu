@@ -143,6 +143,86 @@ class SyncService:
     _rate_limit_counter = 0  # 限流计数器
     _rate_limit_lock = threading.Lock()  # 线程锁
     
+    # 心跳超时时间（秒）- 超过此时间没有心跳的任务视为僵死
+    HEARTBEAT_TIMEOUT = 300  # 5分钟
+    
+    @staticmethod
+    def _update_heartbeat(account_id):
+        """更新账号的同步心跳时间"""
+        try:
+            Account.query.filter_by(id=account_id).update(
+                {'sync_heartbeat': datetime.utcnow()},
+                synchronize_session=False
+            )
+            db.session.commit()
+        except Exception as e:
+            logger.warning(f"更新心跳失败 (account_id={account_id}): {e}")
+            db.session.rollback()
+    
+    @staticmethod
+    def cleanup_stale_tasks(timeout_seconds=None):
+        """清理僵死的同步任务
+        
+        检测长时间处于 processing 状态但没有心跳更新的任务，将其标记为失败。
+        这通常发生在：
+        1. 容器重启后，之前的同步线程已终止
+        2. 同步线程因致命错误崩溃
+        3. 磁盘满、内存不足等系统级错误
+        
+        Args:
+            timeout_seconds: 心跳超时时间（秒），默认使用 HEARTBEAT_TIMEOUT
+            
+        Returns:
+            int: 清理的任务数量
+        """
+        if timeout_seconds is None:
+            timeout_seconds = SyncService.HEARTBEAT_TIMEOUT
+            
+        try:
+            from datetime import timedelta
+            cutoff_time = datetime.utcnow() - timedelta(seconds=timeout_seconds)
+            
+            # 查找僵死任务：
+            # 1. 状态为 processing
+            # 2. 心跳时间为空（旧任务）或心跳超时
+            stale_accounts = Account.query.filter(
+                Account.status == 'processing',
+                db.or_(
+                    Account.sync_heartbeat.is_(None),
+                    Account.sync_heartbeat < cutoff_time
+                )
+            ).all()
+            
+            cleaned_count = 0
+            for account in stale_accounts:
+                heartbeat_info = ""
+                if account.sync_heartbeat:
+                    age = (datetime.utcnow() - account.sync_heartbeat).total_seconds()
+                    heartbeat_info = f"，最后心跳: {int(age)}秒前"
+                else:
+                    heartbeat_info = "，无心跳记录"
+                
+                logger.warning(
+                    f"[僵死任务清理] 账号 {account.name or account.user_id} (id={account.id}) "
+                    f"状态异常{heartbeat_info}，标记为失败"
+                )
+                
+                account.status = 'failed'
+                account.error_message = f"同步任务异常终止（心跳超时），请重新开始同步"
+                account.sync_heartbeat = None
+                cleaned_count += 1
+            
+            if cleaned_count > 0:
+                db.session.commit()
+                logger.info(f"[僵死任务清理] 共清理 {cleaned_count} 个僵死任务")
+            
+            return cleaned_count
+            
+        except Exception as e:
+            logger.error(f"[僵死任务清理] 清理失败: {e}")
+            db.session.rollback()
+            return 0
+    
     @staticmethod
     def _reset_rate_limit_counter():
         """重置限流计数器"""
@@ -425,9 +505,36 @@ class SyncService:
     
     @staticmethod
     def _run_sync(app, account_ids, sync_mode):
-        """在后台线程中执行同步"""
+        """在后台线程中执行同步
+        
+        【重要】顶层异常处理：确保任何致命错误（如磁盘满、内存不足）都能被捕获，
+        并正确更新数据库状态，避免账号永远停留在 processing 状态。
+        """
         with app.app_context():
-            SyncService._sync_accounts(account_ids, sync_mode)
+            try:
+                SyncService._sync_accounts(account_ids, sync_mode)
+            except Exception as e:
+                # 顶层异常捕获：处理任何未被内部捕获的致命错误
+                logger.error(f"[致命错误] 同步线程崩溃: {e}")
+                try:
+                    # 将所有 processing 状态的账号标记为失败
+                    error_msg = f"同步线程崩溃: {str(e)[:200]}"
+                    affected = Account.query.filter(
+                        Account.id.in_(account_ids),
+                        Account.status == 'processing'
+                    ).update(
+                        {
+                            'status': 'failed',
+                            'error_message': error_msg,
+                            'sync_heartbeat': None
+                        },
+                        synchronize_session=False
+                    )
+                    db.session.commit()
+                    logger.info(f"[致命错误恢复] 已将 {affected} 个账号标记为失败")
+                except Exception as inner_e:
+                    logger.error(f"[致命错误恢复失败] 无法更新账号状态: {inner_e}")
+                    db.session.rollback()
     
     @staticmethod
     def _sync_accounts(account_ids, sync_mode):
@@ -503,6 +610,8 @@ class SyncService:
                 # 在开始同步时立即重置已采集数，避免前端轮询时显示旧数据
                 account.loaded_msgs = 0
                 account.error_message = None
+                # 【心跳机制】设置初始心跳时间
+                account.sync_heartbeat = datetime.utcnow()
                 # 清空旧的同步日志
                 if sync_mode == 'deep':
                     account.sync_logs = None
@@ -930,6 +1039,8 @@ class SyncService:
                     # 每处理 5 条笔记或最后一条时才提交，大幅减少锁定时间
                     should_commit = (idx + 1) % 5 == 0 or idx == total - 1
                     if should_commit:
+                        # 【心跳机制】同时更新心跳时间，表明任务仍在运行
+                        account.sync_heartbeat = datetime.utcnow()
                         db.session.commit()
                     
                     # 极速模式下不需要sleep
@@ -952,6 +1063,8 @@ class SyncService:
                     # 因为我们遍历了所有笔记列表
                     account.loaded_msgs = total
                     account.last_sync = datetime.utcnow()
+                    # 【心跳机制】任务完成，清除心跳
+                    account.sync_heartbeat = None
                     
                     # 保存同步日志
                     if sync_log:
@@ -988,6 +1101,8 @@ class SyncService:
                         account.status = 'failed'
                         mode_name = '深度同步' if sync_mode == 'deep' else '极速同步'
                         account.error_message = account.error_message or f"用户手动停止{mode_name}"
+                        # 【心跳机制】任务停止，清除心跳
+                        account.sync_heartbeat = None
                         sync_log_broadcaster.warn(
                             f"用户手动停止同步",
                             account_id=acc_id,
@@ -1000,7 +1115,7 @@ class SyncService:
                 db.session.commit()
                 
             except Exception as e:
-                logger.info(f"Error syncing account {acc_id}: {e}")
+                logger.error(f"Error syncing account {acc_id}: {e}")
                 sync_log_broadcaster.error(
                     f"同步异常: {str(e)}",
                     account_id=acc_id,
@@ -1013,6 +1128,8 @@ class SyncService:
                     if account:
                         account.status = 'failed'
                         account.error_message = f"同步出错: {str(e)}"
+                        # 【心跳机制】异常时清除心跳
+                        account.sync_heartbeat = None
                         # 保存同步日志
                         if sync_log:
                             sync_log.add_issue(
@@ -1023,7 +1140,7 @@ class SyncService:
                             account.sync_logs = json.dumps(logs_data, ensure_ascii=False)
                         db.session.commit()
                 except Exception as inner_e:
-                    logger.info(f"Error updating account status: {inner_e}")
+                    logger.error(f"Error updating account status: {inner_e}")
                     db.session.rollback()
     
     @staticmethod

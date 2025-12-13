@@ -48,6 +48,7 @@ def migrate_database(db_path):
             'status': "VARCHAR(32) DEFAULT 'pending'",
             'error_message': 'TEXT',
             'sync_logs': 'TEXT',  # JSON格式的同步日志
+            'sync_heartbeat': 'DATETIME',  # 同步心跳时间，用于检测僵死任务
             'created_at': 'DATETIME',
             'updated_at': 'DATETIME',
         }
@@ -164,6 +165,16 @@ def create_app(config_class=None):
                 logger.info("SQLite WAL 模式已启用")
             except Exception as e:
                 logger.warning(f"启用 SQLite WAL 模式失败: {e}")
+        
+        # 【僵死任务清理】应用启动时检测并清理僵死的同步任务
+        # 这通常发生在容器重启后，之前的同步线程已终止但状态未更新
+        try:
+            from .services.sync_service import SyncService
+            cleaned = SyncService.cleanup_stale_tasks()
+            if cleaned > 0:
+                logger.info(f"启动时清理了 {cleaned} 个僵死的同步任务")
+        except Exception as e:
+            logger.warning(f"启动时清理僵死任务失败: {e}")
     
     # 注册错误处理
     register_error_handlers(app)
