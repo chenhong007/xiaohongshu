@@ -30,6 +30,7 @@ export const ActionBar = ({
   onReset,
   selectedCount,
   isProcessing,
+  isStopping,
   loading,
   wsConnected
 }) => {
@@ -40,7 +41,7 @@ export const ActionBar = ({
         onClick={onAddClick}
         className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 text-sm flex items-center gap-2"
       >
-        <span>+ Add</span>
+        <span>+ 添加</span>
       </button>
       
       <div className="h-6 w-px bg-gray-300 mx-1" />
@@ -50,14 +51,14 @@ export const ActionBar = ({
         onClick={onImport}
         className="px-3 py-2 bg-gray-100 text-gray-600 rounded hover:bg-gray-200 text-sm flex items-center gap-1"
       >
-        <Upload className="w-3 h-3" /> Import
+        <Upload className="w-3 h-3" /> 导入
       </button>
       
       <button 
         onClick={onExport}
         className="px-3 py-2 bg-gray-100 text-gray-600 rounded hover:bg-gray-200 text-sm flex items-center gap-1"
       >
-        <Download className="w-3 h-3" /> Export
+        <Download className="w-3 h-3" /> 导出
       </button>
       
       {/* Delete */}
@@ -66,7 +67,7 @@ export const ActionBar = ({
         className="px-3 py-2 bg-red-50 text-red-600 rounded hover:bg-red-100 text-sm flex items-center gap-1"
         disabled={selectedCount === 0}
       >
-        <Trash2 className="w-3 h-3" /> Delete
+        <Trash2 className="w-3 h-3" /> 删除
       </button>
       
       <div className="h-6 w-px bg-gray-300 mx-1" />
@@ -75,9 +76,23 @@ export const ActionBar = ({
       {isProcessing ? (
         <button 
           onClick={onStopSync}
-          className="px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600 text-sm flex items-center gap-2 animate-pulse"
+          disabled={isStopping}
+          className={`px-4 py-2 text-white rounded text-sm flex items-center gap-2 ${
+            isStopping 
+              ? 'bg-gray-400 cursor-not-allowed' 
+              : 'bg-red-500 hover:bg-red-600 animate-pulse'
+          }`}
         >
-          <StopCircle className="w-4 h-4" /> Stop Sync
+          {isStopping ? (
+            <>
+              <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+              Stopping...
+            </>
+          ) : (
+            <>
+              <StopCircle className="w-4 h-4" /> Stop Sync
+            </>
+          )}
         </button>
       ) : (
         <>
@@ -85,20 +100,20 @@ export const ActionBar = ({
             onClick={() => onBatchSync('fast')}
             className="px-4 py-2 bg-green-100 text-green-700 rounded hover:bg-green-200 text-sm flex items-center gap-1 border border-green-200"
             disabled={loading}
-            title="Quick sync - only updates like counts"
+            title="快速同步 - 仅更新点赞数等"
           >
             <Zap className="w-4 h-4" /> 
-            {selectedCount > 0 ? `Fast Sync (${selectedCount})` : 'Fast Sync All'}
+            {selectedCount > 0 ? `快速同步 (${selectedCount})` : '快速同步全部'}
           </button>
           
           <button 
             onClick={() => onBatchSync('deep')}
             className="px-4 py-2 bg-blue-100 text-blue-700 rounded hover:bg-blue-200 text-sm flex items-center gap-1 border border-blue-200"
             disabled={loading}
-            title="Deep sync - fetches all details"
+            title="深度同步 - 获取所有详情"
           >
             <Database className="w-4 h-4" /> 
-            {selectedCount > 0 ? `Deep Sync (${selectedCount})` : 'Deep Sync All'}
+            {selectedCount > 0 ? `深度同步 (${selectedCount})` : '深度同步全部'}
           </button>
         </>
       )}
@@ -108,12 +123,12 @@ export const ActionBar = ({
         className={`ml-auto flex items-center gap-1 px-2 py-1 rounded text-xs ${
           wsConnected ? 'bg-green-50 text-green-600' : 'bg-gray-50 text-gray-400'
         }`}
-        title={wsConnected ? 'WebSocket connected' : 'Using polling mode'}
+        title={wsConnected ? 'WebSocket 已连接' : '使用轮询模式'}
       >
         {wsConnected ? (
-          <><Wifi className="w-3 h-3" /><span>Live</span></>
+          <><Wifi className="w-3 h-3" /><span>实时</span></>
         ) : (
-          <><WifiOff className="w-3 h-3" /><span>Polling</span></>
+          <><WifiOff className="w-3 h-3" /><span>轮询</span></>
         )}
       </div>
 
@@ -121,9 +136,9 @@ export const ActionBar = ({
       <button 
         onClick={onReset} 
         className="px-3 py-2 text-gray-400 hover:text-red-500 rounded text-sm flex items-center gap-1"
-        title="Clear all data"
+        title="清除所有数据"
       >
-        <Trash2 className="w-3 h-3" /> Clear
+        <Trash2 className="w-3 h-3" /> 清除
       </button>
     </div>
   );

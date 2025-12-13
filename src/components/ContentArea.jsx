@@ -65,6 +65,7 @@ export const ContentArea = ({
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [logModalOpen, setLogModalOpen] = useState(false);
   const [selectedAccountForLog, setSelectedAccountForLog] = useState(null);
+  const [isStopping, setIsStopping] = useState(false);
   
   // Track previous account states for change detection
   const prevAccountsRef = useRef([]);
@@ -230,14 +231,37 @@ export const ContentArea = ({
 
   // Stop sync
   const handleStopSync = useCallback(async () => {
-    if (!confirm('Stop current sync?')) return;
+    if (!confirm('确定要停止当前同步任务吗？')) return;
+    
+    setIsStopping(true);
     try {
-      await accountApi.stopSync();
+      const result = await accountApi.stopSync();
+      // Update local state immediately to show stopped status
+      const stoppedCount = accounts.filter(acc => 
+        acc.status === 'processing' || acc.status === 'pending'
+      ).length;
+      
+      setAccounts(prev => prev.map(acc => {
+        if (acc.status === 'processing' || acc.status === 'pending') {
+          return { ...acc, status: 'failed', progress: 0, error_message: '用户手动停止同步' };
+        }
+        return acc;
+      }));
+      
+      // Show success message
+      if (stoppedCount > 0) {
+        console.log(`✅ 已停止 ${stoppedCount} 个同步任务`);
+      }
+      
+      // Refresh to get final state from server
       setTimeout(fetchAccounts, 500);
     } catch (err) {
-      setError('Failed to stop sync');
+      console.error('Stop sync failed:', err);
+      setError('停止同步失败，请重试');
+    } finally {
+      setIsStopping(false);
     }
-  }, [fetchAccounts, setError]);
+  }, [accounts, fetchAccounts, setError, setAccounts]);
 
   // Fix missing data
   const handleFixMissing = useCallback(async (accountId) => {
@@ -381,6 +405,7 @@ export const ContentArea = ({
           onReset={handleReset}
           selectedCount={selectedIds.size}
           isProcessing={isProcessing}
+          isStopping={isStopping}
           loading={loading}
           wsConnected={wsConnected}
         />

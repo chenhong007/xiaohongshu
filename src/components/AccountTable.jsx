@@ -71,7 +71,7 @@ const AccountRow = ({
           </div>
           {account.status === 'processing' && (
             <div className="text-xs text-blue-500 transform scale-90 origin-left animate-pulse">
-              {(account.progress || 0) === 0 ? 'Starting...' : 'Syncing...'}
+              {(account.progress || 0) === 0 ? '启动中...' : '同步中...'}
             </div>
           )}
         </div>
@@ -83,13 +83,13 @@ const AccountRow = ({
               <div 
                 className="flex items-center gap-1 cursor-pointer hover:bg-yellow-100 rounded px-1"
                 onClick={onShowLog}
-                title="Completed with issues"
+                title="完成但有问题"
               >
                 <AlertTriangle className="w-4 h-4 text-yellow-500" />
-                <span className="text-xs text-yellow-600">Issues</span>
+                <span className="text-xs text-yellow-600">有问题</span>
               </div>
             ) : (
-              <CheckCircle className="w-4 h-4 text-green-500" title="Completed" />
+              <CheckCircle className="w-4 h-4 text-green-500" title="已完成" />
             )
           ) : account.status === 'failed' ? (
             <div className="group relative">
@@ -102,24 +102,24 @@ const AccountRow = ({
               )}
             </div>
           ) : (account.status === 'processing' || account.status === 'pending') ? (
-            <RefreshCw className="w-4 h-4 text-blue-500 animate-spin" title="Syncing" />
+            <RefreshCw className="w-4 h-4 text-blue-500 animate-spin" title="同步中" />
           ) : (
-            <Circle className="w-4 h-4 text-gray-300" title="Pending" />
+            <Circle className="w-4 h-4 text-gray-300" title="待同步" />
           )}
           <span className="text-xs text-gray-400">
-            {account.status === 'completed' ? 'Done' : 
-             account.status === 'failed' ? 'Failed' : 
-             account.status === 'processing' ? 'Syncing' : 
-             account.status === 'pending' ? 'Pending' : 'Ready'}
+            {account.status === 'completed' ? '已完成' : 
+             account.status === 'failed' ? '失败' : 
+             account.status === 'processing' ? '同步中' : 
+             account.status === 'pending' ? '待同步' : '就绪'}
           </span>
           {account.sync_logs && (
             <button
               onClick={onShowLog}
               className="text-xs text-blue-500 hover:text-blue-700 hover:underline flex items-center gap-0.5"
-              title="View sync logs"
+              title="查看同步日志"
             >
               <FileText className="w-3 h-3" />
-              Log
+              日志
             </button>
           )}
         </div>
@@ -130,7 +130,7 @@ const AccountRow = ({
             className="p-1 hover:bg-green-100 rounded text-green-600 disabled:opacity-50"
             onClick={() => onSync('fast')}
             disabled={account.status === 'processing'}
-            title="Fast sync"
+            title="快速同步"
           >
             <Zap className="w-4 h-4" />
           </button>
@@ -138,7 +138,7 @@ const AccountRow = ({
             className="p-1 hover:bg-blue-100 rounded text-blue-600 disabled:opacity-50"
             onClick={() => onSync('deep')}
             disabled={account.status === 'processing'}
-            title="Deep sync"
+            title="深度同步"
           >
             <Database className="w-4 h-4" />
           </button>
@@ -146,7 +146,7 @@ const AccountRow = ({
             className="p-1 hover:bg-orange-100 rounded text-orange-600 disabled:opacity-50"
             onClick={onFixMissing}
             disabled={account.status === 'processing'}
-            title="Fix missing data"
+            title="修复缺失数据"
           >
             <Wrench className="w-4 h-4" />
           </button>
@@ -189,22 +189,22 @@ export const AccountTable = ({
               />
             </th>
             <th className="p-4">#</th>
-            <th className="p-4">Avatar</th>
-            <th className="p-4">Name</th>
-            <th className="p-4">Fans</th>
-            <th className="p-4">Last Sync</th>
-            <th className="p-4 text-center">Total</th>
-            <th className="p-4 text-center">Synced</th>
-            <th className="p-4">Progress</th>
-            <th className="p-4 text-center">Status</th>
-            <th className="p-4 text-center">Actions</th>
+            <th className="p-4">头像</th>
+            <th className="p-4">名称</th>
+            <th className="p-4">粉丝</th>
+            <th className="p-4">上次同步</th>
+            <th className="p-4 text-center">总数</th>
+            <th className="p-4 text-center">已同步</th>
+            <th className="p-4">进度</th>
+            <th className="p-4 text-center">状态</th>
+            <th className="p-4 text-center">操作</th>
           </tr>
         </thead>
         <tbody>
           {accounts.length === 0 ? (
             <tr>
               <td colSpan="11" className="p-8 text-center text-gray-400">
-                {loading ? 'Loading...' : 'No data, click "Add" to add accounts'}
+                {loading ? '加载中...' : '暂无数据，点击"添加"来添加账号'}
               </td>
             </tr>
           ) : (
