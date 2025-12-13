@@ -242,7 +242,7 @@ function App() {
                 <div className="p-6 pb-0">
                   <h2 className="text-2xl font-bold text-gray-800">笔记下载</h2>
                 </div>
-                <DownloadPage />
+                <DownloadPage accounts={accounts} accountsLoading={accountsLoading} />
               </>
             } 
           />

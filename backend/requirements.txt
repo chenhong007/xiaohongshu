@@ -3,6 +3,7 @@ flask>=3.0.0
 flask-cors>=4.0.0
 flask-sqlalchemy>=3.1.0
 flask-socketio>=5.3.0
+flask-migrate>=4.0.0
 
 # 数据库
 sqlalchemy>=2.0.0
@@ -32,6 +33,10 @@ python-dotenv>=1.0.0
 # 生产环境 WSGI 服务器
 gunicorn>=21.0.0
 
-# 可选：异步任务队列
+# Testing
+pytest>=7.4.0
+pytest-cov>=4.1.0
+
+# Optional: async task queue
 # celery>=5.3.0
 # redis>=5.0.0

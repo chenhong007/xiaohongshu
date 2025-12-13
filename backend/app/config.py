@@ -30,33 +30,21 @@ class Config:
     ADMIN_API_KEY = os.environ.get('ADMIN_API_KEY')
     
     # ==================== 数据库配置 ====================
-    # 支持从环境变量读取数据库 URL
+    # PostgreSQL database URL (required)
     DATABASE_URL = os.environ.get('DATABASE_URL')
-    if DATABASE_URL:
-        SQLALCHEMY_DATABASE_URI = DATABASE_URL
-    else:
-        SQLALCHEMY_DATABASE_URI = f'sqlite:///{os.path.join(BASE_DIR, "xhs_data.db")}'
+    if not DATABASE_URL:
+        raise ValueError('DATABASE_URL environment variable is required')
     
+    SQLALCHEMY_DATABASE_URI = DATABASE_URL
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     
-    # Database engine options based on database type
-    # PostgreSQL uses connection pooling, SQLite uses thread-safe settings
-    if DATABASE_URL and DATABASE_URL.startswith('postgresql'):
-        SQLALCHEMY_ENGINE_OPTIONS = {
-            'pool_size': 10,
-            'pool_recycle': 300,
-            'pool_pre_ping': True,
-            'max_overflow': 20,
-        }
-    else:
-        # SQLite configuration (backward compatible)
-        SQLALCHEMY_ENGINE_OPTIONS = {
-            'connect_args': {
-                'check_same_thread': False,  # Allow multi-thread access
-                'timeout': 30,  # Lock wait timeout (seconds)
-            },
-            'pool_pre_ping': True,  # Check connection validity before use
-        }
+    # PostgreSQL connection pooling options
+    SQLALCHEMY_ENGINE_OPTIONS = {
+        'pool_size': 10,
+        'pool_recycle': 300,
+        'pool_pre_ping': True,
+        'max_overflow': 20,
+    }
     
     # ==================== CORS 配置 ====================
     # 允许的跨域来源（逗号分隔）
@@ -144,7 +132,11 @@ class ProductionConfig(Config):
 class TestingConfig(Config):
     """测试环境配置"""
     TESTING = True
-    SQLALCHEMY_DATABASE_URI = 'sqlite:///:memory:'
+    # Use separate test database, override from environment if needed
+    SQLALCHEMY_DATABASE_URI = os.environ.get(
+        'TEST_DATABASE_URL',
+        os.environ.get('DATABASE_URL', '').replace('/xhs_data', '/xhs_test')
+    )
 
 
 # 配置映射

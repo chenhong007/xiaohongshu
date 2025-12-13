@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Search, RefreshCw, ChevronDown, Coffee, Download as DownloadIcon, Play, Image, Video, ExternalLink, Trash2, X, Check, Calendar, Heart, Star, MessageCircle, RotateCcw, Share2, Copy, CheckCircle, Settings2, ChevronLeft, ChevronRight, Eye, EyeOff } from 'lucide-react';
-import { noteApi, accountApi } from '../services';
+import { noteApi } from '../services';
 
 // 图片预览组件 - 使用 state 跟踪有效的图片 URL，确保小图和悬浮大图使用相同的源
 // 修复问题：
@@ -112,13 +112,14 @@ const PreviewImage = ({ previewSrc, remoteSrc, imageList }) => {
   );
 };
 
-export const DownloadPage = () => {
-  // 数据状态
+export const DownloadPage = ({ accounts: cachedAccounts = [], accountsLoading = false }) => {
+  // 数据状态 - accounts 直接使用从 App 传入的缓存数据
   const [notes, setNotes] = useState([]);
-  const [accounts, setAccounts] = useState([]);
+  const accounts = cachedAccounts;  // Reuse cached accounts from App level
   const [loading, setLoading] = useState(false);
   const [totalCount, setTotalCount] = useState(0);
   const [dataLoaded, setDataLoaded] = useState(false); // 标记是否已加载过数据
+  const initialLoadRef = useRef(false);  // Track initial auto-load
   
   // 筛选条件
   const [selectedUserIds, setSelectedUserIds] = useState([]);
@@ -205,18 +206,19 @@ export const DownloadPage = () => {
     setVisibleColumns(newState);
   };
 
-  // 获取账号列表（用于筛选下拉框）
+  // Auto-load notes on first mount
+  // - Load immediately if accounts are ready
+  // - Load after accountsLoading finishes (even if accounts is empty, notes can still load)
   useEffect(() => {
-    const fetchAccounts = async () => {
-      try {
-        const data = await accountApi.getAll();
-        setAccounts(Array.isArray(data) ? data : []);
-      } catch (err) {
-        console.error('Failed to fetch accounts:', err);
-      }
-    };
-    fetchAccounts();
-  }, []);
+    if (!initialLoadRef.current && !accountsLoading) {
+      initialLoadRef.current = true;
+      setDataLoaded(true);
+      // Use requestAnimationFrame to ensure fetchNotes is defined
+      requestAnimationFrame(() => {
+        fetchNotes();
+      });
+    }
+  }, [accountsLoading]);
 
   // 点击外部关闭博主下拉框
   useEffect(() => {

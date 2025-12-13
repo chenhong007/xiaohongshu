@@ -1,17 +1,18 @@
 """
-Flask 应用工厂
+Flask Application Factory
+
+This module creates and configures the Flask application.
 """
-import os
-import sqlite3
-from flask import Flask
+import time
+from flask import Flask, g, request, jsonify
 from flask_cors import CORS
 
 from .config import Config, get_config
-from .extensions import db
+from .extensions import db, migrate
 from .api import accounts_bp, notes_bp, auth_bp, search_bp, sync_logs_bp
 from .utils.logger import setup_logger, get_logger
 
-# WebSocket support (optional, may not be available in all environments)
+# WebSocket support (optional)
 try:
     from .websocket import socketio, init_socketio
     WEBSOCKET_AVAILABLE = True
@@ -20,109 +21,25 @@ except ImportError:
     socketio = None
 
 
-def migrate_database(db_path):
-    """检查并添加缺失的数据库列"""
-    if not os.path.exists(db_path):
-        return
-    
-    logger = get_logger('migration')
-    
-    try:
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-        
-        # 检查 accounts 表是否存在
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='accounts'")
-        if not cursor.fetchone():
-            conn.close()
-            return
-        
-        # 获取现有列
-        cursor.execute("PRAGMA table_info(accounts)")
-        existing_columns = [row[1] for row in cursor.fetchall()]
-        
-        # 需要添加的列
-        # 注意: xsec_token 已从 accounts 表移除，用户级别的 token 每次同步时动态获取
-        columns_to_add = {
-            'red_id': 'VARCHAR(64)',
-            'desc': 'TEXT',
-            'fans': 'INTEGER DEFAULT 0',
-            'follows': 'INTEGER DEFAULT 0',
-            'interaction': 'INTEGER DEFAULT 0',
-            'last_sync': 'DATETIME',
-            'total_msgs': 'INTEGER DEFAULT 0',
-            'loaded_msgs': 'INTEGER DEFAULT 0',
-            'progress': 'INTEGER DEFAULT 0',
-            'status': "VARCHAR(32) DEFAULT 'pending'",
-            'error_message': 'TEXT',
-            'sync_logs': 'TEXT',  # JSON格式的同步日志
-            'sync_heartbeat': 'DATETIME',  # 同步心跳时间，用于检测僵死任务
-            'created_at': 'DATETIME',
-            'updated_at': 'DATETIME',
-        }
-        
-        for column_name, column_type in columns_to_add.items():
-            if column_name not in existing_columns:
-                try:
-                    cursor.execute(f"ALTER TABLE accounts ADD COLUMN {column_name} {column_type}")
-                    logger.info(f"添加列 accounts.{column_name}")
-                except sqlite3.OperationalError:
-                    pass
-
-        # 检查 notes 表，补充本地/远程封面字段和xsec_token
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='notes'")
-        if cursor.fetchone():
-            cursor.execute("PRAGMA table_info(notes)")
-            notes_columns = [row[1] for row in cursor.fetchall()]
-            note_columns_to_add = {
-                'cover_remote': 'VARCHAR(512)',
-                'cover_local': 'VARCHAR(512)',
-                'xsec_token': 'VARCHAR(256)',  # 笔记级别的验证token
-            }
-            for column_name, column_type in note_columns_to_add.items():
-                if column_name not in notes_columns:
-                    try:
-                        cursor.execute(f"ALTER TABLE notes ADD COLUMN {column_name} {column_type}")
-                        logger.info(f"添加列 notes.{column_name}")
-                    except sqlite3.OperationalError:
-                        pass
-        
-        # 检查 cookies 表
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='cookies'")
-        if cursor.fetchone():
-            cursor.execute("PRAGMA table_info(cookies)")
-            cookie_columns = [row[1] for row in cursor.fetchall()]
-            
-            cookie_columns_to_add = {
-                'encrypted_cookie': 'TEXT',  # 新增加密字段
-            }
-            
-            for column_name, column_type in cookie_columns_to_add.items():
-                if column_name not in cookie_columns:
-                    try:
-                        cursor.execute(f"ALTER TABLE cookies ADD COLUMN {column_name} {column_type}")
-                        logger.info(f"添加列 cookies.{column_name}")
-                    except sqlite3.OperationalError:
-                        pass
-        
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        logger.error(f"数据库迁移检查失败: {e}")
-
-
 def create_app(config_class=None):
-    """创建并配置 Flask 应用"""
-    # 如果没有指定配置，根据环境变量自动选择
+    """Create and configure Flask application.
+    
+    Args:
+        config_class: Configuration class to use. If None, auto-detect from environment.
+        
+    Returns:
+        Configured Flask application instance
+    """
     if config_class is None:
         config_class = get_config()
     
     app = Flask(__name__)
     app.config.from_object(config_class)
-    # 确保数据目录存在（媒体/导出等）
+    
+    # Ensure data directories exist
     Config.init_paths()
     
-    # 初始化日志
+    # Initialize logging
     setup_logger(
         log_level=app.config.get('LOG_LEVEL', 'INFO'),
         log_file=app.config.get('LOG_FILE')
@@ -130,117 +47,99 @@ def create_app(config_class=None):
     
     logger = get_logger('app')
     
-    # 初始化 CORS（使用配置的域名列表）
+    # Initialize CORS
     cors_config = config_class.get_cors_config()
     CORS(app, resources={r"/api/*": cors_config})
     
-    # 初始化数据库扩展
+    # Initialize database
     db.init_app(app)
     
-    # 注册蓝图
-    # 保持向后兼容，同时支持 /api 和 /api/v1
+    # Initialize Flask-Migrate
+    migrate.init_app(app, db)
+    
+    # Register blueprints (single prefix, no duplication)
+    _register_blueprints(app)
+    
+    # Perform startup tasks
+    # Note: Use 'flask db upgrade' to create/update database tables
+    with app.app_context():
+        _cleanup_stale_tasks(logger)
+    
+    # Register handlers and hooks
+    _register_error_handlers(app)
+    _register_request_hooks(app)
+    _register_health_check(app)
+    
+    # Initialize WebSocket if available
+    if WEBSOCKET_AVAILABLE:
+        _init_websocket(app, logger)
+    
+    db_uri = app.config.get('SQLALCHEMY_DATABASE_URI', '')
+    logger.info(f"Application initialized, database: {db_uri}")
+    
+    return app
+
+
+def _register_blueprints(app):
+    """Register API blueprints with single prefix."""
+    # Use /api as the primary prefix
+    # For versioning, consider using Accept headers or /api/v2 for breaking changes
     app.register_blueprint(accounts_bp, url_prefix='/api')
     app.register_blueprint(notes_bp, url_prefix='/api')
     app.register_blueprint(auth_bp, url_prefix='/api')
     app.register_blueprint(search_bp, url_prefix='/api')
     app.register_blueprint(sync_logs_bp, url_prefix='/api')
-    
-    # API v1 版本（推荐使用）
-    app.register_blueprint(accounts_bp, url_prefix='/api/v1', name='accounts_v1')
-    app.register_blueprint(notes_bp, url_prefix='/api/v1', name='notes_v1')
-    app.register_blueprint(auth_bp, url_prefix='/api/v1', name='auth_v1')
-    app.register_blueprint(search_bp, url_prefix='/api/v1', name='search_v1')
-    app.register_blueprint(sync_logs_bp, url_prefix='/api/v1', name='sync_logs_v1')
-    
-    # 数据库迁移检查（在 create_all 之前）
-    db_uri = app.config.get('SQLALCHEMY_DATABASE_URI', '')
-    if db_uri.startswith('sqlite:///'):
-        db_path = db_uri.replace('sqlite:///', '')
-        migrate_database(db_path)
-    
-    # 创建数据库表
-    with app.app_context():
-        db.create_all()
-        
-        # 【性能优化】启用 SQLite WAL 模式
-        # WAL 模式允许读写并发，可以大幅减少深度同步时的锁等待
-        if 'sqlite' in db_uri:
-            try:
-                db.session.execute(db.text('PRAGMA journal_mode=WAL'))
-                db.session.execute(db.text('PRAGMA synchronous=NORMAL'))
-                db.session.execute(db.text('PRAGMA busy_timeout=30000'))  # 30秒超时
-                db.session.commit()
-                logger.info("SQLite WAL 模式已启用")
-            except Exception as e:
-                logger.warning(f"启用 SQLite WAL 模式失败: {e}")
-        
-        # 【僵死任务清理】应用启动时检测并清理僵死的同步任务
-        # 这通常发生在容器重启后，之前的同步线程已终止但状态未更新
-        try:
-            from .services.sync_service import SyncService
-            cleaned = SyncService.cleanup_stale_tasks()
-            if cleaned > 0:
-                logger.info(f"启动时清理了 {cleaned} 个僵死的同步任务")
-        except Exception as e:
-            logger.warning(f"启动时清理僵死任务失败: {e}")
-    
-    # 注册错误处理
-    register_error_handlers(app)
-    
-    # 注册请求钩子
-    register_request_hooks(app)
-    
-    # 注册健康检查端点
-    register_health_check(app)
-    
-    # 初始化 WebSocket（如果可用）
-    if WEBSOCKET_AVAILABLE:
-        try:
-            init_socketio(app)
-            # Enable WebSocket in broadcaster
-            from .services.sync_log_broadcaster import sync_log_broadcaster
-            sync_log_broadcaster.enable_websocket()
-            logger.info("WebSocket 实时推送已启用")
-        except Exception as e:
-            logger.warning(f"WebSocket 初始化失败，回退到轮询模式: {e}")
-    
-    logger.info(f"应用初始化完成，数据库: {db_uri}")
-    
-    return app
 
 
-def register_error_handlers(app):
-    """注册全局错误处理"""
+def _cleanup_stale_tasks(logger):
+    """Clean up stale sync tasks on startup."""
+    try:
+        from .services.sync_service import SyncService
+        cleaned = SyncService.cleanup_stale_tasks()
+        if cleaned > 0:
+            logger.info(f"Cleaned up {cleaned} stale sync tasks on startup")
+    except Exception as e:
+        logger.warning(f"Failed to cleanup stale tasks: {e}")
+
+
+def _init_websocket(app, logger):
+    """Initialize WebSocket support."""
+    try:
+        init_socketio(app)
+        from .services.sync_log_broadcaster import sync_log_broadcaster
+        sync_log_broadcaster.enable_websocket()
+        logger.info("WebSocket real-time push enabled")
+    except Exception as e:
+        logger.warning(f"WebSocket initialization failed, falling back to polling: {e}")
+
+
+def _register_error_handlers(app):
+    """Register global error handlers."""
     from .utils.responses import ApiResponse
     
     @app.errorhandler(400)
     def bad_request(error):
-        return ApiResponse.error(
-            str(error.description) if hasattr(error, 'description') else '请求参数错误',
-            400, 'BAD_REQUEST'
-        )
+        msg = str(error.description) if hasattr(error, 'description') else 'Bad request'
+        return ApiResponse.error(msg, 400, 'BAD_REQUEST')
     
     @app.errorhandler(404)
     def not_found(error):
-        return ApiResponse.not_found(
-            str(error.description) if hasattr(error, 'description') else '资源不存在'
-        )
+        msg = str(error.description) if hasattr(error, 'description') else 'Resource not found'
+        return ApiResponse.not_found(msg)
     
     @app.errorhandler(405)
     def method_not_allowed(error):
-        return ApiResponse.error('请求方法不允许', 405, 'METHOD_NOT_ALLOWED')
+        return ApiResponse.error('Method not allowed', 405, 'METHOD_NOT_ALLOWED')
     
     @app.errorhandler(500)
     def internal_error(error):
         logger = get_logger('error')
         logger.exception(error)
-        return ApiResponse.server_error('服务器内部错误')
+        return ApiResponse.server_error('Internal server error')
 
 
-def register_request_hooks(app):
-    """注册请求钩子"""
-    import time
-    from flask import g, request
+def _register_request_hooks(app):
+    """Register request timing hooks."""
     
     @app.before_request
     def before_request():
@@ -250,21 +149,18 @@ def register_request_hooks(app):
     def after_request(response):
         if hasattr(g, 'start_time'):
             duration = (time.time() - g.start_time) * 1000
-            # 可以在这里记录请求日志
-            if duration > 1000:  # 记录慢请求
+            if duration > 1000:  # Log slow requests
                 logger = get_logger('slow_request')
                 logger.warning(f"Slow request: {request.method} {request.path} took {duration:.2f}ms")
         return response
 
 
-def register_health_check(app):
-    """注册健康检查端点"""
-    from flask import jsonify
+def _register_health_check(app):
+    """Register health check endpoint."""
     
     @app.route('/api/health')
-    @app.route('/api/v1/health')
     def health_check():
-        """健康检查端点，用于 Docker 容器健康检查"""
+        """Health check endpoint for container orchestration."""
         return jsonify({
             'status': 'healthy',
             'service': 'xhs-backend'
