@@ -1,5 +1,6 @@
 """
 同步日志广播服务 - 用于实时推送同步日志到前端
+支持 SSE（Server-Sent Events）和 WebSocket 双通道推送
 """
 import json
 import queue
@@ -15,7 +16,12 @@ LOG_LEVEL_ERROR = 'error'
 
 
 class SyncLogBroadcaster:
-    """同步日志广播器 - 单例模式"""
+    """同步日志广播器 - 单例模式
+    
+    支持双通道推送：
+    1. SSE (Server-Sent Events) - 向后兼容
+    2. WebSocket - 新增实时推送
+    """
     
     _instance = None
     _lock = threading.Lock()
@@ -33,10 +39,17 @@ class SyncLogBroadcaster:
             return
         self._initialized = True
         
-        # 订阅者队列字典 {client_id: queue}
+        # SSE 订阅者队列字典 {client_id: queue}
         self._subscribers: Dict[str, queue.Queue] = {}
         self._sub_lock = threading.Lock()
         self._client_counter = 0
+        
+        # WebSocket enabled flag
+        self._websocket_enabled = False
+    
+    def enable_websocket(self):
+        """Enable WebSocket broadcasting"""
+        self._websocket_enabled = True
     
     def subscribe(self) -> tuple:
         """订阅日志流，返回 (client_id, generator)"""
@@ -70,9 +83,22 @@ class SyncLogBroadcaster:
         finally:
             self.unsubscribe(client_id)
     
+    def _broadcast_via_websocket(self, log_entry: dict):
+        """Broadcast log entry via WebSocket"""
+        if not self._websocket_enabled:
+            return
+        
+        try:
+            from ..websocket import broadcast_sync_log
+            broadcast_sync_log(log_entry)
+        except ImportError:
+            pass  # WebSocket module not available
+        except Exception as e:
+            pass  # Silently fail to avoid breaking sync
+    
     def broadcast(self, level: str, message: str, account_id: int = None, 
                   account_name: str = None, note_id: str = None, extra: dict = None):
-        """广播日志消息到所有订阅者"""
+        """广播日志消息到所有订阅者（SSE + WebSocket）"""
         log_entry = {
             'timestamp': datetime.utcnow().isoformat() + 'Z',
             'level': level,
@@ -88,6 +114,7 @@ class SyncLogBroadcaster:
         if extra:
             log_entry['extra'] = extra
         
+        # Broadcast via SSE (existing mechanism)
         with self._sub_lock:
             dead_clients = []
             for client_id, q in self._subscribers.items():
@@ -104,6 +131,46 @@ class SyncLogBroadcaster:
             # 清理死客户端
             for client_id in dead_clients:
                 del self._subscribers[client_id]
+        
+        # Broadcast via WebSocket (new mechanism)
+        self._broadcast_via_websocket(log_entry)
+    
+    def broadcast_progress(self, account_id: int, status: str, progress: int,
+                           loaded_msgs: int, total_msgs: int, **kwargs):
+        """Broadcast sync progress update via WebSocket
+        
+        This is a specialized method for progress updates that goes directly
+        to WebSocket without SSE overhead.
+        """
+        if not self._websocket_enabled:
+            return
+        
+        try:
+            from ..websocket import broadcast_sync_progress
+            broadcast_sync_progress(account_id, {
+                'status': status,
+                'progress': progress,
+                'loaded_msgs': loaded_msgs,
+                'total_msgs': total_msgs,
+                **kwargs
+            })
+        except ImportError:
+            pass
+        except Exception:
+            pass
+    
+    def broadcast_completed(self, account_id: int, status: str, summary: dict = None):
+        """Broadcast sync completion event via WebSocket"""
+        if not self._websocket_enabled:
+            return
+        
+        try:
+            from ..websocket import broadcast_sync_completed
+            broadcast_sync_completed(account_id, status, summary)
+        except ImportError:
+            pass
+        except Exception:
+            pass
     
     def info(self, message: str, **kwargs):
         """广播 INFO 级别日志"""

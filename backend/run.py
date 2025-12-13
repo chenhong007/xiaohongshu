@@ -3,7 +3,8 @@
 小红书采集系统 - 后端服务
 
 启动方式:
-    python run.py
+    python run.py              # 普通模式
+    python run.py --websocket  # WebSocket 模式（推荐）
 
 环境变量配置:
     - 复制 env.example 为 .env
@@ -22,7 +23,7 @@ try:
 except ImportError:
     pass
 
-from app import create_app
+from app import create_app, WEBSOCKET_AVAILABLE, socketio
 from app.config import Config, get_config
 
 # 初始化数据目录
@@ -40,6 +41,9 @@ if __name__ == '__main__':
     if env == 'production':
         config_class.validate()
     
+    # Check if WebSocket mode is requested
+    use_websocket = '--websocket' in sys.argv or os.environ.get('USE_WEBSOCKET', '').lower() in ('1', 'true', 'yes')
+    
     print("=" * 60)
     print("🍓 小红书采集系统 - 后端服务")
     print("=" * 60)
@@ -48,6 +52,14 @@ if __name__ == '__main__':
     print(f"📌 环境: {env}")
     print(f"📌 数据库: {app.config['SQLALCHEMY_DATABASE_URI']}")
     print(f"📌 CORS 允许来源: {', '.join(config_class.CORS_ORIGINS)}")
+    
+    # WebSocket status
+    if WEBSOCKET_AVAILABLE and use_websocket:
+        print("🔌 WebSocket 推送: 已启用 (实时同步进度)")
+    elif WEBSOCKET_AVAILABLE:
+        print("🔌 WebSocket 推送: 可用 (使用 --websocket 启用)")
+    else:
+        print("⚠️  WebSocket 推送: 不可用 (请安装 flask-socketio 和 eventlet)")
     
     # 检查安全配置
     from app.utils.crypto import get_crypto
@@ -64,4 +76,10 @@ if __name__ == '__main__':
     
     print("=" * 60)
     
-    app.run(host='0.0.0.0', port=8000, debug=(env == 'development'), use_reloader=False)
+    if WEBSOCKET_AVAILABLE and use_websocket:
+        # Run with WebSocket support using eventlet
+        print("🚀 使用 SocketIO + Eventlet 运行...")
+        socketio.run(app, host='0.0.0.0', port=8000, debug=(env == 'development'))
+    else:
+        # Run with standard Flask development server
+        app.run(host='0.0.0.0', port=8000, debug=(env == 'development'), use_reloader=False)

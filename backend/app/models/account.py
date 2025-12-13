@@ -50,13 +50,29 @@ class Account(db.Model):
     # 关联笔记
     notes = db.relationship('Note', backref='account', lazy='dynamic')
     
-    def to_dict(self):
-        """转换为字典"""
-        # 解析 sync_logs JSON
+    def to_dict(self, include_full_logs=False):
+        """转换为字典
+        
+        Args:
+            include_full_logs: 是否包含完整的 sync_logs（包括 issues 列表）。
+                              默认 False，只返回 summary 以减少数据传输量。
+        """
+        # Parse sync_logs JSON - only return summary by default
         sync_logs_data = None
         if self.sync_logs:
             try:
-                sync_logs_data = json.loads(self.sync_logs)
+                full_logs = json.loads(self.sync_logs)
+                if include_full_logs:
+                    sync_logs_data = full_logs
+                else:
+                    # Only return summary without issues list
+                    sync_logs_data = {
+                        'sync_mode': full_logs.get('sync_mode'),
+                        'start_time': full_logs.get('start_time'),
+                        'end_time': full_logs.get('end_time'),
+                        'summary': full_logs.get('summary'),
+                        'issues_count': len(full_logs.get('issues', [])),
+                    }
             except (json.JSONDecodeError, TypeError):
                 sync_logs_data = None
         
@@ -76,10 +92,50 @@ class Account(db.Model):
             'progress': self.progress,
             'status': self.status,
             'error_message': self.error_message,
-            'sync_logs': sync_logs_data,  # 同步日志详情
+            'sync_logs': sync_logs_data,
             'sync_heartbeat': self.sync_heartbeat.isoformat() + 'Z' if self.sync_heartbeat else None,
             'created_at': self.created_at.isoformat() + 'Z' if self.created_at else None,
         }
+    
+    def get_sync_logs_issues(self, page=1, page_size=50, issue_type=None):
+        """分页获取同步日志的 issues 列表
+        
+        Args:
+            page: 页码，从1开始
+            page_size: 每页数量，默认50
+            issue_type: 可选，筛选特定类型的问题
+        
+        Returns:
+            dict: {issues: [], total: int, page: int, page_size: int, total_pages: int}
+        """
+        if not self.sync_logs:
+            return {'issues': [], 'total': 0, 'page': page, 'page_size': page_size, 'total_pages': 0}
+        
+        try:
+            full_logs = json.loads(self.sync_logs)
+            all_issues = full_logs.get('issues', [])
+            
+            # Filter by type if specified
+            if issue_type:
+                all_issues = [i for i in all_issues if i.get('type') == issue_type]
+            
+            total = len(all_issues)
+            total_pages = (total + page_size - 1) // page_size if page_size > 0 else 0
+            
+            # Paginate
+            start = (page - 1) * page_size
+            end = start + page_size
+            paginated_issues = all_issues[start:end]
+            
+            return {
+                'issues': paginated_issues,
+                'total': total,
+                'page': page,
+                'page_size': page_size,
+                'total_pages': total_pages,
+            }
+        except (json.JSONDecodeError, TypeError):
+            return {'issues': [], 'total': 0, 'page': page, 'page_size': page_size, 'total_pages': 0}
     
     def __repr__(self):
         return f'<Account {self.name}>'

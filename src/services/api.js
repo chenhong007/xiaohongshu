@@ -200,6 +200,12 @@ export const accountApi = {
   getAll: () => api.get('/accounts'),
 
   /**
+   * 获取账号同步状态（轻量级）
+   * 只返回同步状态相关字段，用于轮询场景，避免序列化 sync_logs 等大字段
+   */
+  getStatus: () => api.get('/accounts/status'),
+
+  /**
    * 获取单个账号
    */
   getById: (id) => api.get(`/accounts/${id}`),

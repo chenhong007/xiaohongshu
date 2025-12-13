@@ -10,6 +10,12 @@ class Note(db.Model):
     """笔记模型"""
     __tablename__ = 'notes'
     
+    # Add composite index for common query patterns
+    __table_args__ = (
+        db.Index('ix_notes_user_upload_time', 'user_id', 'upload_time'),
+        db.Index('ix_notes_user_type', 'user_id', 'type'),
+    )
+    
     note_id = db.Column(db.String(64), primary_key=True)
     user_id = db.Column(db.String(64), db.ForeignKey('accounts.user_id'), index=True)
     
@@ -18,7 +24,7 @@ class Note(db.Model):
     avatar = db.Column(db.String(512))
     title = db.Column(db.String(256))
     desc = db.Column(db.Text)
-    type = db.Column(db.String(32))  # 图集 / 视频
+    type = db.Column(db.String(32), index=True)  # 图集 / 视频
     
     # 互动数据
     liked_count = db.Column(db.Integer, default=0)
@@ -27,7 +33,7 @@ class Note(db.Model):
     share_count = db.Column(db.Integer, default=0)
     
     # 媒体信息
-    upload_time = db.Column(db.String(64))
+    upload_time = db.Column(db.String(64), index=True)
     video_addr = db.Column(db.String(512))
     image_list = db.Column(db.Text)  # JSON 格式存储图片列表
     tags = db.Column(db.Text)  # JSON 格式存储标签

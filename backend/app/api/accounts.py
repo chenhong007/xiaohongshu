@@ -35,6 +35,43 @@ def get_accounts():
         return ApiResponse.server_error('获取账号列表失败')
 
 
+@accounts_bp.route('/accounts/status', methods=['GET'])
+def get_accounts_status():
+    """
+    获取账号同步状态（轻量级）
+    
+    只返回同步状态相关字段，用于前端轮询，避免序列化 sync_logs 等大字段
+    
+    Returns:
+        状态列表数组: [{id, status, progress, loaded_msgs, total_msgs, error_message, last_sync}]
+    """
+    try:
+        accounts = Account.query.with_entities(
+            Account.id,
+            Account.status,
+            Account.progress,
+            Account.loaded_msgs,
+            Account.total_msgs,
+            Account.error_message,
+            Account.last_sync
+        ).order_by(Account.id.desc()).all()
+        
+        result = [{
+            'id': acc.id,
+            'status': acc.status,
+            'progress': acc.progress,
+            'loaded_msgs': acc.loaded_msgs,
+            'total_msgs': acc.total_msgs,
+            'error_message': acc.error_message,
+            'last_sync': acc.last_sync.isoformat() + 'Z' if acc.last_sync else None,
+        } for acc in accounts]
+        
+        return success_response(data=result)
+    except Exception as e:
+        logger.error(f"获取账号状态失败: {e}")
+        return ApiResponse.server_error('获取账号状态失败')
+
+
 @accounts_bp.route('/accounts', methods=['POST'])
 def add_account():
     """
@@ -266,6 +303,61 @@ def stop_sync():
     
     logger.info(f"停止同步，影响 {updated} 个账号")
     return success_response(message='正在停止同步任务')
+
+
+@accounts_bp.route('/accounts/<int:account_id>/sync-logs', methods=['GET'])
+def get_account_sync_logs(account_id):
+    """
+    分页获取账号的同步日志 issues
+    
+    Query Parameters:
+        - page: 页码，默认 1
+        - page_size: 每页数量，默认 50，最大 200
+        - type: 可选，筛选特定类型的问题 (rate_limited, unavailable, missing_field, fetch_failed, token_refresh, media_failed, auth_error)
+    
+    Returns:
+        {
+            issues: [{type, note_id, message, time, ...}],
+            total: int,
+            page: int,
+            page_size: int,
+            total_pages: int,
+            summary: {...}  # 同步摘要信息
+        }
+    """
+    account = Account.query.get(account_id)
+    if not account:
+        return ApiResponse.not_found('账号不存在')
+    
+    try:
+        page = int(request.args.get('page', 1))
+        page_size = min(int(request.args.get('page_size', 50)), 200)  # max 200
+        issue_type = request.args.get('type')
+        
+        if page < 1:
+            page = 1
+        if page_size < 1:
+            page_size = 50
+        
+        # Get paginated issues
+        result = account.get_sync_logs_issues(page=page, page_size=page_size, issue_type=issue_type)
+        
+        # Add summary info
+        if account.sync_logs:
+            import json
+            try:
+                full_logs = json.loads(account.sync_logs)
+                result['summary'] = full_logs.get('summary')
+                result['sync_mode'] = full_logs.get('sync_mode')
+                result['start_time'] = full_logs.get('start_time')
+                result['end_time'] = full_logs.get('end_time')
+            except (json.JSONDecodeError, TypeError):
+                result['summary'] = None
+        
+        return success_response(data=result)
+    except Exception as e:
+        logger.error(f"获取同步日志失败: {e}")
+        return ApiResponse.server_error('获取同步日志失败')
 
 
 @accounts_bp.route('/accounts/<int:account_id>/fix-missing', methods=['POST'])

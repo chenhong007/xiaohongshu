@@ -435,7 +435,7 @@ export const ContentArea = ({
     prevAccountsRef.current = accounts;
   }, [accounts, emitCookieInvalidSafely]);
 
-  // 轮询更新处理中的账号状态
+  // 轮询更新处理中的账号状态（使用轻量级 API）
   useEffect(() => {
     const processingAccounts = accounts.filter(acc => acc.status === 'processing' || acc.status === 'pending');
     const isProcessing = processingAccounts.length > 0;
@@ -447,18 +447,54 @@ export const ContentArea = ({
       ).join(', ');
       console.log(`[同步调试] 正在处理 ${processingAccounts.length} 个账号:`, summary);
       
-      // 【性能优化】增加轮询间隔到 4 秒，减少对后端的请求压力
-      // 深度同步每条笔记需要 30-60 秒，4 秒轮询完全够用
-      const timer = setInterval(() => {
-        // 轮询时静默刷新，不输出日志（减少噪音）
-        fetchAccounts(true);
+      // 【性能优化】使用轻量级状态 API，避免序列化 sync_logs 等大字段
+      const timer = setInterval(async () => {
+        try {
+          // 使用轻量级 API 只获取状态字段
+          const statusList = await accountApi.getStatus();
+          
+          // 检查是否有账号从 processing/pending 变为 completed/failed
+          const statusMap = new Map(statusList.map(s => [s.id, s]));
+          const justCompleted = accounts.some(acc => {
+            const newStatus = statusMap.get(acc.id);
+            return newStatus && 
+              (acc.status === 'processing' || acc.status === 'pending') &&
+              (newStatus.status === 'completed' || newStatus.status === 'failed');
+          });
+          
+          // 合并状态到现有账号数据
+          setAccounts(prev => prev.map(acc => {
+            const newStatus = statusMap.get(acc.id);
+            if (newStatus) {
+              return {
+                ...acc,
+                status: newStatus.status,
+                progress: newStatus.progress,
+                loaded_msgs: newStatus.loaded_msgs,
+                total_msgs: newStatus.total_msgs,
+                error_message: newStatus.error_message,
+                last_sync: newStatus.last_sync,
+              };
+            }
+            return acc;
+          }));
+          
+          // 如果有账号刚完成，延迟获取完整数据（包含 sync_logs）
+          if (justCompleted) {
+            console.log('[同步调试] 检测到同步完成，获取完整数据');
+            setTimeout(() => fetchAccounts(true), 500);
+          }
+        } catch (err) {
+          console.error('[同步调试] 获取状态失败:', err);
+        }
       }, 4000);
+      
       return () => {
         console.log('[同步调试] 停止轮询');
         clearInterval(timer);
       };
     }
-  }, [accounts, fetchAccounts]);
+  }, [accounts, fetchAccounts, setAccounts]);
 
   // 切换选择
   const toggleSelect = (id) => {

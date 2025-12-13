@@ -75,6 +75,14 @@ class Config:
     # 额外随机长延迟的概率与上限（防爬虫抖动）
     DEEP_SYNC_EXTRA_PAUSE_CHANCE = float(os.environ.get('DEEP_SYNC_EXTRA_PAUSE_CHANCE', '0.20'))
     DEEP_SYNC_EXTRA_PAUSE_MAX = float(os.environ.get('DEEP_SYNC_EXTRA_PAUSE_MAX', '30.0'))
+    # 限流后等待时间区间（秒）
+    RATE_LIMIT_WAIT_MIN = float(os.environ.get('RATE_LIMIT_WAIT_MIN', '60.0'))
+    RATE_LIMIT_WAIT_MAX = float(os.environ.get('RATE_LIMIT_WAIT_MAX', '120.0'))
+    # 限流失败后的基础等待时间区间（秒）
+    RATE_LIMIT_FAIL_WAIT_MIN = float(os.environ.get('RATE_LIMIT_FAIL_WAIT_MIN', '120.0'))
+    RATE_LIMIT_FAIL_WAIT_MAX = float(os.environ.get('RATE_LIMIT_FAIL_WAIT_MAX', '180.0'))
+    # 动态退避系数（每次限流增加的等待时间，秒）
+    RATE_LIMIT_BACKOFF_FACTOR = float(os.environ.get('RATE_LIMIT_BACKOFF_FACTOR', '15.0'))
     # 最大并发同步数
     MAX_CONCURRENT_SYNCS = int(os.environ.get('MAX_CONCURRENT_SYNCS', '3'))
     

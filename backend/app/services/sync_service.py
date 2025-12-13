@@ -7,6 +7,7 @@ import sys
 import time
 import random
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from urllib.parse import urlparse
 from flask import current_app
@@ -27,6 +28,231 @@ from Spider_XHS.main import Data_Spider
 
 # 获取日志器
 logger = get_logger('sync')
+
+
+class AdaptiveDelayManager:
+    """智能延迟管理器 - 指数退避 + 快速恢复策略
+    
+    核心策略：
+    1. 指数退避：每次限流后延迟翻倍（最高到 max_delay）
+    2. 快速恢复：连续成功 N 次后延迟减半（最低到 min_delay）
+    3. 动态调节：根据限流频率自动调整基础延迟
+    """
+    
+    def __init__(
+        self,
+        min_delay: float = 5.0,
+        max_delay: float = 300.0,
+        initial_delay: float = 30.0,
+        backoff_factor: float = 2.0,
+        recovery_threshold: int = 3,
+        recovery_factor: float = 0.7
+    ):
+        """
+        Args:
+            min_delay: Minimum delay in seconds
+            max_delay: Maximum delay in seconds
+            initial_delay: Starting delay value
+            backoff_factor: Multiply delay by this on rate limit
+            recovery_threshold: Consecutive successes needed to reduce delay
+            recovery_factor: Multiply delay by this on recovery (< 1.0)
+        """
+        self.min_delay = min_delay
+        self.max_delay = max_delay
+        self.initial_delay = initial_delay
+        self.backoff_factor = backoff_factor
+        self.recovery_threshold = recovery_threshold
+        self.recovery_factor = recovery_factor
+        
+        self._current_delay = initial_delay
+        self._consecutive_success = 0
+        self._rate_limit_count = 0
+        self._lock = threading.Lock()
+        
+        logger.info(
+            f"[AdaptiveDelay] Initialized: min={min_delay}s, max={max_delay}s, "
+            f"initial={initial_delay}s, backoff={backoff_factor}x"
+        )
+    
+    def record_rate_limit(self):
+        """Record a rate limit event, increase delay exponentially"""
+        with self._lock:
+            self._rate_limit_count += 1
+            self._consecutive_success = 0
+            old_delay = self._current_delay
+            self._current_delay = min(
+                self._current_delay * self.backoff_factor,
+                self.max_delay
+            )
+            logger.warning(
+                f"[AdaptiveDelay] Rate limit #{self._rate_limit_count}: "
+                f"delay {old_delay:.1f}s -> {self._current_delay:.1f}s"
+            )
+    
+    def record_success(self):
+        """Record a successful request, potentially reduce delay"""
+        with self._lock:
+            self._consecutive_success += 1
+            
+            # Fast recovery after consecutive successes
+            if self._consecutive_success >= self.recovery_threshold:
+                old_delay = self._current_delay
+                self._current_delay = max(
+                    self._current_delay * self.recovery_factor,
+                    self.min_delay
+                )
+                self._consecutive_success = 0  # Reset counter
+                
+                if old_delay != self._current_delay:
+                    logger.info(
+                        f"[AdaptiveDelay] Fast recovery: "
+                        f"delay {old_delay:.1f}s -> {self._current_delay:.1f}s"
+                    )
+    
+    def get_delay(self) -> float:
+        """Get current delay with random jitter (±20%)"""
+        with self._lock:
+            jitter = random.uniform(0.8, 1.2)
+            return self._current_delay * jitter
+    
+    def get_rate_limit_wait(self) -> float:
+        """Get wait time after rate limit (longer than normal delay)"""
+        with self._lock:
+            # Extra wait time based on consecutive rate limits
+            base_wait = self._current_delay * 2
+            extra_wait = min(self._rate_limit_count * 15, 120)
+            return base_wait + extra_wait + random.uniform(5, 15)
+    
+    def reset(self):
+        """Reset to initial state"""
+        with self._lock:
+            self._current_delay = self.initial_delay
+            self._consecutive_success = 0
+            self._rate_limit_count = 0
+            logger.info("[AdaptiveDelay] Reset to initial state")
+    
+    def get_stats(self) -> dict:
+        """Get current statistics"""
+        with self._lock:
+            return {
+                'current_delay': self._current_delay,
+                'consecutive_success': self._consecutive_success,
+                'rate_limit_count': self._rate_limit_count,
+            }
+
+
+class RequestSessionPool:
+    """HTTP 请求会话池 - 复用 TCP 连接提高性能
+    
+    使用 requests.Session 复用 TCP 连接的优点：
+    1. 避免重复 TCP 三次握手
+    2. 复用 SSL/TLS 会话
+    3. 支持 HTTP Keep-Alive
+    4. 连接池管理，避免连接泄漏
+    """
+    
+    _instance = None
+    _lock = threading.Lock()
+    
+    # Connection pool configuration
+    POOL_CONNECTIONS = 10  # Number of connection pools to cache
+    POOL_MAXSIZE = 10      # Max connections per host
+    MAX_RETRIES = 3        # Automatic retries on connection errors
+    
+    def __new__(cls):
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    cls._instance._initialized = False
+        return cls._instance
+    
+    def __init__(self):
+        if self._initialized:
+            return
+        
+        # Create session with connection pooling
+        self._session = requests.Session()
+        
+        # Configure connection pool adapter
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=self.POOL_CONNECTIONS,
+            pool_maxsize=self.POOL_MAXSIZE,
+            max_retries=self.MAX_RETRIES,
+            pool_block=False
+        )
+        self._session.mount('http://', adapter)
+        self._session.mount('https://', adapter)
+        
+        # Statistics
+        self._stats = {'requests': 0, 'errors': 0}
+        self._stats_lock = threading.Lock()
+        
+        self._initialized = True
+        logger.info(
+            f"[RequestSessionPool] Initialized: "
+            f"pool_connections={self.POOL_CONNECTIONS}, pool_maxsize={self.POOL_MAXSIZE}"
+        )
+    
+    def get(self, url, **kwargs) -> requests.Response:
+        """Send GET request using pooled session"""
+        with self._stats_lock:
+            self._stats['requests'] += 1
+        
+        try:
+            return self._session.get(url, **kwargs)
+        except Exception as e:
+            with self._stats_lock:
+                self._stats['errors'] += 1
+            raise
+    
+    def post(self, url, **kwargs) -> requests.Response:
+        """Send POST request using pooled session"""
+        with self._stats_lock:
+            self._stats['requests'] += 1
+        
+        try:
+            return self._session.post(url, **kwargs)
+        except Exception as e:
+            with self._stats_lock:
+                self._stats['errors'] += 1
+            raise
+    
+    @property
+    def session(self) -> requests.Session:
+        """Get the underlying session for direct use"""
+        return self._session
+    
+    def get_stats(self) -> dict:
+        """Get request statistics"""
+        with self._stats_lock:
+            return self._stats.copy()
+    
+    def close(self):
+        """Close all connections in the pool"""
+        self._session.close()
+        logger.info("[RequestSessionPool] Session pool closed")
+
+
+# Global instances
+_adaptive_delay_manager = None
+_request_session_pool = None
+
+
+def get_adaptive_delay_manager() -> AdaptiveDelayManager:
+    """Get global adaptive delay manager instance"""
+    global _adaptive_delay_manager
+    if _adaptive_delay_manager is None:
+        _adaptive_delay_manager = AdaptiveDelayManager()
+    return _adaptive_delay_manager
+
+
+def get_request_session_pool() -> RequestSessionPool:
+    """Get global request session pool instance"""
+    global _request_session_pool
+    if _request_session_pool is None:
+        _request_session_pool = RequestSessionPool()
+    return _request_session_pool
 
 
 class SyncLogCollector:
@@ -135,6 +361,252 @@ class SyncLogCollector:
             db.session.rollback()
 
 
+class MediaDownloadQueue:
+    """异步媒体下载队列 - 使用线程池处理下载任务，避免阻塞主同步流程
+    
+    单例模式，全局共享一个下载队列。
+    支持两种任务类型：
+    1. cover - 封面下载
+    2. media - 完整媒体文件下载
+    """
+    
+    _instance = None
+    _lock = threading.Lock()
+    
+    # Thread pool configuration
+    MAX_WORKERS = 4  # Concurrent download threads
+    QUEUE_TIMEOUT = 10  # Seconds to wait for task submission
+    
+    def __new__(cls):
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    cls._instance._initialized = False
+        return cls._instance
+    
+    def __init__(self):
+        if self._initialized:
+            return
+        
+        self._executor = ThreadPoolExecutor(max_workers=self.MAX_WORKERS, thread_name_prefix='media_dl')
+        self._futures = []
+        self._futures_lock = threading.Lock()
+        self._stats = {'submitted': 0, 'completed': 0, 'failed': 0}
+        self._stats_lock = threading.Lock()
+        self._initialized = True
+        logger.info(f"[MediaDownloadQueue] Initialized with {self.MAX_WORKERS} workers")
+    
+    def submit_cover_download(self, remote_url, note_id, callback=None):
+        """Submit a cover download task to the queue
+        
+        Args:
+            remote_url: Remote URL of the cover image
+            note_id: Note ID for filename generation
+            callback: Optional callback function(note_id, local_path) called after download
+        """
+        if not remote_url or not note_id:
+            return
+        
+        def _download_task():
+            try:
+                local_path = self._do_download_cover(remote_url, note_id)
+                if callback and local_path:
+                    callback(note_id, local_path)
+                with self._stats_lock:
+                    self._stats['completed'] += 1
+                return local_path
+            except Exception as e:
+                logger.warning(f"[MediaDownloadQueue] Cover download failed for {note_id}: {e}")
+                with self._stats_lock:
+                    self._stats['failed'] += 1
+                return None
+        
+        try:
+            future = self._executor.submit(_download_task)
+            with self._futures_lock:
+                self._futures.append(future)
+                with self._stats_lock:
+                    self._stats['submitted'] += 1
+        except Exception as e:
+            logger.warning(f"[MediaDownloadQueue] Failed to submit cover task for {note_id}: {e}")
+    
+    def submit_media_download(self, note_id, note_data):
+        """Submit a full media download task to the queue
+        
+        Args:
+            note_id: Note ID
+            note_data: Note data dict containing image_list and video_addr
+        """
+        if not note_id or not note_data:
+            return
+        
+        def _download_task():
+            try:
+                self._do_download_all_media(note_id, note_data)
+                with self._stats_lock:
+                    self._stats['completed'] += 1
+            except Exception as e:
+                logger.warning(f"[MediaDownloadQueue] Media download failed for {note_id}: {e}")
+                with self._stats_lock:
+                    self._stats['failed'] += 1
+        
+        try:
+            future = self._executor.submit(_download_task)
+            with self._futures_lock:
+                self._futures.append(future)
+                with self._stats_lock:
+                    self._stats['submitted'] += 1
+        except Exception as e:
+            logger.warning(f"[MediaDownloadQueue] Failed to submit media task for {note_id}: {e}")
+    
+    def wait_completion(self, timeout=None):
+        """Wait for all pending download tasks to complete
+        
+        Args:
+            timeout: Maximum seconds to wait. None means wait forever.
+        
+        Returns:
+            bool: True if all tasks completed, False if timeout
+        """
+        with self._futures_lock:
+            futures_copy = self._futures[:]
+        
+        if not futures_copy:
+            return True
+        
+        try:
+            completed = 0
+            for future in as_completed(futures_copy, timeout=timeout):
+                completed += 1
+            
+            # Clean up completed futures
+            with self._futures_lock:
+                self._futures = [f for f in self._futures if not f.done()]
+            
+            logger.info(f"[MediaDownloadQueue] Wait completed: {completed} tasks finished")
+            return True
+        except TimeoutError:
+            logger.warning(f"[MediaDownloadQueue] Wait timeout after {timeout}s")
+            return False
+    
+    def get_stats(self):
+        """Get current queue statistics"""
+        with self._stats_lock:
+            pending = 0
+            with self._futures_lock:
+                pending = len([f for f in self._futures if not f.done()])
+            return {
+                'submitted': self._stats['submitted'],
+                'completed': self._stats['completed'],
+                'failed': self._stats['failed'],
+                'pending': pending
+            }
+    
+    def _do_download_cover(self, remote_url, note_id):
+        """Actual cover download implementation (runs in worker thread)"""
+        if not remote_url:
+            return None
+        try:
+            Config.init_paths()
+            parsed = urlparse(remote_url)
+            ext = os.path.splitext(parsed.path)[1]
+            if not ext or len(ext) > 5:
+                ext = '.jpg'
+            filename = f"{note_id}_cover{ext}"
+            filepath = os.path.join(Config.MEDIA_PATH, filename)
+            
+            # Skip if file exists and is valid
+            if os.path.exists(filepath) and os.path.getsize(filepath) > 1024:
+                return f"/api/media/{filename}"
+            
+            headers = get_common_headers()
+            session_pool = get_request_session_pool()
+            # Retry mechanism with shorter timeout for async downloads
+            for attempt in range(2):
+                try:
+                    resp = session_pool.get(remote_url, headers=headers, stream=True, timeout=10)
+                    if resp.status_code == 200:
+                        with open(filepath, 'wb') as f:
+                            for chunk in resp.iter_content(8192):
+                                if chunk:
+                                    f.write(chunk)
+                        logger.info(f"[MediaDownloadQueue] Downloaded cover for {note_id}")
+                        return f"/api/media/{filename}"
+                    elif resp.status_code == 403:
+                        logger.warning(f"[MediaDownloadQueue] Cover 403 for {note_id}, attempt {attempt+1}")
+                        time.sleep(0.5)
+                except Exception as dl_err:
+                    logger.warning(f"[MediaDownloadQueue] Cover attempt {attempt+1} failed: {dl_err}")
+                    time.sleep(0.5)
+                    
+        except Exception as e:
+            logger.error(f"[MediaDownloadQueue] Cover error for {note_id}: {e}")
+        return None
+    
+    def _do_download_all_media(self, note_id, note_data):
+        """Actual media download implementation (runs in worker thread)"""
+        try:
+            Config.init_paths()
+            note_dir = os.path.join(Config.MEDIA_PATH, str(note_id))
+            if not os.path.exists(note_dir):
+                os.makedirs(note_dir)
+            
+            headers = get_common_headers()
+            session_pool = get_request_session_pool()
+            downloaded_count = 0
+            
+            # Download images
+            if note_data.get('image_list'):
+                for idx, img_url in enumerate(note_data['image_list']):
+                    ext = '.jpg'
+                    filename = f"image_{idx}{ext}"
+                    filepath = os.path.join(note_dir, filename)
+                    
+                    if os.path.exists(filepath) and os.path.getsize(filepath) > 1024:
+                        continue
+                    
+                    # Build fallback URLs
+                    urls_to_try = [img_url]
+                    if 'sns-img-qc.xhscdn.com' in img_url or 'sns-img-hw.xhscdn.com' in img_url:
+                        img_id = img_url.split('/')[-1].split('?')[0]
+                        urls_to_try.extend([
+                            f'https://ci.xiaohongshu.com/{img_id}?imageView2/2/w/format/jpg',
+                            f'https://sns-img-hw.xhscdn.com/{img_id}?imageView2/2/w/format/jpg',
+                        ])
+                    elif 'ci.xiaohongshu.com' in img_url and '?' not in img_url:
+                        urls_to_try.append(f'{img_url}?imageView2/2/w/format/jpg')
+                    
+                    for try_url in urls_to_try:
+                        try:
+                            resp = session_pool.get(try_url, headers=headers, stream=True, timeout=15)
+                            if resp.status_code == 200 and int(resp.headers.get('content-length', 0)) > 1024:
+                                with open(filepath, 'wb') as f:
+                                    for chunk in resp.iter_content(8192):
+                                        f.write(chunk)
+                                downloaded_count += 1
+                                break
+                        except Exception:
+                            continue
+            
+            if downloaded_count > 0:
+                logger.info(f"[MediaDownloadQueue] Archived {downloaded_count} files for note {note_id}")
+                
+        except Exception as e:
+            logger.error(f"[MediaDownloadQueue] Media error for {note_id}: {e}")
+
+
+# Global media download queue instance
+_media_download_queue = None
+
+def get_media_download_queue():
+    """Get the global media download queue instance"""
+    global _media_download_queue
+    if _media_download_queue is None:
+        _media_download_queue = MediaDownloadQueue()
+    return _media_download_queue
+
+
 class SyncService:
     """同步服务类"""
     
@@ -225,23 +697,29 @@ class SyncService:
     
     @staticmethod
     def _reset_rate_limit_counter():
-        """重置限流计数器"""
+        """重置限流计数器和智能延迟管理器"""
         with SyncService._rate_limit_lock:
             SyncService._rate_limit_counter = 0
+        # Reset adaptive delay manager
+        get_adaptive_delay_manager().reset()
     
     @staticmethod
     def _record_rate_limit():
-        """记录一次限流事件"""
+        """记录一次限流事件，触发指数退避"""
         with SyncService._rate_limit_lock:
             SyncService._rate_limit_counter += 1
             logger.warning(f"[限流计数] 累计限流次数: {SyncService._rate_limit_counter}")
+        # Notify adaptive delay manager for exponential backoff
+        get_adaptive_delay_manager().record_rate_limit()
     
     @staticmethod
     def _record_success():
-        """记录一次成功请求，逐步减少限流计数"""
+        """记录一次成功请求，触发快速恢复"""
         with SyncService._rate_limit_lock:
             if SyncService._rate_limit_counter > 0:
                 SyncService._rate_limit_counter = max(0, SyncService._rate_limit_counter - 1)
+        # Notify adaptive delay manager for fast recovery
+        get_adaptive_delay_manager().record_success()
     
     @staticmethod
     def _mark_accounts_failed(account_ids, message):
@@ -444,34 +922,24 @@ class SyncService:
 
     @staticmethod
     def _sleep_with_jitter(sync_mode):
-        """深度同步时增加随机间隔，降低爬虫特征
+        """深度同步时使用智能延迟策略
         
         【重要】深度同步需要请求详情页API，小红书对此有严格的频率限制。
-        太快会导致返回 "访问频次异常" 或 "当前笔记暂时无法浏览" 错误。
-        策略参考 fix_deep_sync.py: 5-15秒基础延迟 + 20%概率额外暂停5-30秒。
+        现在使用 AdaptiveDelayManager 实现智能延迟：
+        - 指数退避：限流时自动增加延迟
+        - 快速恢复：连续成功时自动减少延迟
         """
         if sync_mode != 'deep':
             return
-
-        cfg = current_app.config if current_app else {}
-        try:
-            # 【重要】小红书反爬很严格，默认延迟必须足够长！
-            # 2024-12 更新：由于限流问题严重，将延迟从 5-15秒 增加到 30-60秒
-            # 同时增加额外暂停概率和时长
-            min_delay = float(cfg.get('DEEP_SYNC_DELAY_MIN', 30.0))
-            max_delay = float(cfg.get('DEEP_SYNC_DELAY_MAX', 60.0))
-            extra_prob = float(cfg.get('DEEP_SYNC_EXTRA_PAUSE_CHANCE', 0.30))
-            extra_max = float(cfg.get('DEEP_SYNC_EXTRA_PAUSE_MAX', 60.0))
-        except Exception:
-            min_delay, max_delay, extra_prob, extra_max = 30.0, 60.0, 0.30, 60.0
-
-        min_delay = max(0.5, min_delay)
-        max_delay = max(min_delay, max_delay)
-
-        delay = random.uniform(min_delay, max_delay)
-        if random.random() < extra_prob:
-            delay += random.uniform(5.0, extra_max)
-
+        
+        delay_manager = get_adaptive_delay_manager()
+        delay = delay_manager.get_delay()
+        
+        # Extra random pause to avoid detection (15% probability)
+        if random.random() < 0.15:
+            delay += random.uniform(5.0, 20.0)
+        
+        logger.debug(f"[AdaptiveDelay] Sleeping for {delay:.1f}s")
         time.sleep(delay)
 
     @staticmethod
@@ -753,9 +1221,22 @@ class SyncService:
                 if sync_log:
                     sync_log.set_total(total)
                 
+                # 【性能优化】预加载已存在的笔记ID和需要更新的笔记到内存缓存
+                # 避免每次循环都查询数据库，大幅减少数据库查询次数
+                all_note_ids = [n.get('note_id') or n.get('id') for n in all_note_info]
+                existing_notes_query = Note.query.filter(Note.note_id.in_(all_note_ids)).all()
+                existing_notes_cache = {n.note_id: n for n in existing_notes_query}
+                existing_note_ids_cache = set(existing_notes_cache.keys())
+                logger.info(f"[内存缓存] 预加载 {len(existing_note_ids_cache)}/{len(all_note_ids)} 条已存在笔记")
+                
                 # 处理每个笔记
                 # 【重要】笔记级别的xsec_token应从get_user_all_notes返回的all_note_info中获取
                 # 参考main.py: note_url = f"https://www.xiaohongshu.com/explore/{simple_note_info['note_id']}?xsec_token={simple_note_info['xsec_token']}"
+                
+                # 【性能优化】极速同步模式下使用批量保存
+                FAST_SYNC_BATCH_SIZE = 20  # batch size for bulk operations in fast sync mode
+                fast_sync_batch = []  # batch buffer for fast sync mode
+                
                 for idx, simple_note in enumerate(all_note_info):
                     # 检查是否停止
                     if SyncService._stop_event.is_set():
@@ -777,8 +1258,8 @@ class SyncService:
                     
                     if sync_mode == 'deep':
                         # 方案B:深度同步(增量模式)
-                        # 检查数据库中是否存在该笔记
-                        existing_note = Note.query.filter_by(note_id=note_id).first()
+                        # 【性能优化】使用内存缓存检查笔记是否存在，避免每次查询数据库
+                        existing_note = existing_notes_cache.get(note_id)
                         
                         missing_fields = []
                         if not existing_note:
@@ -806,7 +1287,8 @@ class SyncService:
                             
                             if sync_mode == 'deep':
                                 # 深度模式下,如果是旧笔记,只更新点赞数（列表页唯一可用的互动数据）
-                                existing_note = Note.query.filter_by(note_id=note_id).first()
+                                # 【性能优化】使用内存缓存获取笔记对象，避免重复查询数据库
+                                existing_note = existing_notes_cache.get(note_id)
                                 if existing_note:
                                     # 只更新点赞数,其他数据保留（因为列表页不提供）
                                     if cleaned_data['liked_count'] is not None:
@@ -817,9 +1299,20 @@ class SyncService:
                                     if sync_log:
                                         sync_log.record_skipped()
                             else:
-                                # 极速模式下,保存/更新笔记
-                                # _save_note会智能处理None值（不覆盖已有数据）
-                                SyncService._save_note(cleaned_data)
+                                # 【性能优化】极速模式下，收集到批量缓冲区，延迟批量保存
+                                fast_sync_batch.append(cleaned_data)
+                                
+                                # 每 FAST_SYNC_BATCH_SIZE 条批量保存一次
+                                if len(fast_sync_batch) >= FAST_SYNC_BATCH_SIZE:
+                                    try:
+                                        # 【性能优化】传入预加载的缓存，避免重复查询
+                                        inserted, updated = SyncService._bulk_save_notes(
+                                            fast_sync_batch, existing_note_ids_cache, existing_notes_cache
+                                        )
+                                        logger.info(f"[极速同步] 批量保存 {len(fast_sync_batch)} 条: 插入 {inserted}, 更新 {updated}")
+                                    except Exception as e:
+                                        logger.error(f"[极速同步] 批量保存失败: {e}")
+                                    fast_sync_batch = []  # clear batch buffer
                                 
                         except Exception as e:
                             logger.info(f"Error quick updating note {note_id}: {e}")
@@ -865,9 +1358,9 @@ class SyncService:
                                         message=str(msg),
                                         extra={'retry': retry_attempt + 1, 'rate_limit_count': SyncService._rate_limit_counter}
                                     )
-                                # 【关键】限流后等待更长时间再重试（2024-12 更新：增加等待时间）
-                                wait_time = random.uniform(60, 120) + SyncService._rate_limit_counter * 15
-                                logger.info(f"[限流重试] 等待 {wait_time:.1f}s 后重试")
+                                # 【智能延迟】使用自适应延迟管理器计算等待时间
+                                wait_time = get_adaptive_delay_manager().get_rate_limit_wait()
+                                logger.info(f"[限流重试] 智能等待 {wait_time:.1f}s 后重试")
                                 time.sleep(wait_time)
                                 continue  # 重试
                             
@@ -959,7 +1452,8 @@ class SyncService:
                                     logger.info(f"[深度同步调试] note_id={note_id}, note_info: upload_time={note_info.get('upload_time')}, collected_count={note_info.get('collected_count')}, comment_count={note_info.get('comment_count')}")
                                     
                                     # 深度同步获取详情后，下载所有媒体资源
-                                    SyncService._save_note(note_info, download_media=True)
+                                    # 【性能优化】auto_commit=False，由主循环统一批量提交，减少 SQLite 锁竞争
+                                    SyncService._save_note(note_info, download_media=True, auto_commit=False)
                                     detail_saved = True
                                     # 【关键】记录成功，减少限流计数
                                     SyncService._record_success()
@@ -991,13 +1485,11 @@ class SyncService:
                                     continue  # 重试
                                 break  # 其他原因，不重试
                         
-                        # 如果因为限流导致3次都失败，增加额外等待
+                        # 如果因为限流导致3次都失败，增加额外等待（从配置读取）
                         if rate_limited and not detail_saved:
-                            # 【关键修复】限流后等待更长时间（2024-12 更新：120-180秒 + 动态退避）
-                            base_wait = random.uniform(120, 180)
-                            dynamic_wait = min(SyncService._rate_limit_counter * 30, 180)
-                            total_wait = base_wait + dynamic_wait
-                            logger.warning(f"[限流失败] 笔记 {note_id} 连续限流，等待 {total_wait:.1f}s 后继续 (计数: {SyncService._rate_limit_counter})")
+                            # 【智能延迟】使用自适应延迟管理器计算等待时间
+                            total_wait = get_adaptive_delay_manager().get_rate_limit_wait() * 1.5
+                            logger.warning(f"[限流失败] 笔记 {note_id} 连续限流，智能等待 {total_wait:.1f}s 后继续")
                             time.sleep(total_wait)
                         
                         # 【关键修复】如果详情获取失败，至少保存列表页的基本数据
@@ -1021,7 +1513,8 @@ class SyncService:
                                 # 传入笔记级别的xsec_token以便存储
                                 cleaned_data = handle_note_info(simple_note, from_list=True, xsec_token=note_xsec_token)
                                 # 列表页数据，不下载完整媒体（因为没有详情），但封面可以获取
-                                SyncService._save_note(cleaned_data, download_media=False)
+                                # 【性能优化】auto_commit=False，由主循环统一批量提交，减少 SQLite 锁竞争
+                                SyncService._save_note(cleaned_data, download_media=False, auto_commit=False)
                             except Exception as e:
                                 logger.warning(f"Error saving note {note_id} with list data: {e}")
                         
@@ -1042,11 +1535,32 @@ class SyncService:
                         # 【心跳机制】同时更新心跳时间，表明任务仍在运行
                         account.sync_heartbeat = datetime.utcnow()
                         db.session.commit()
+                        
+                        # 【WebSocket 推送】实时广播进度到前端
+                        sync_log_broadcaster.broadcast_progress(
+                            account_id=acc_id,
+                            status='processing',
+                            progress=account.progress,
+                            loaded_msgs=account.loaded_msgs,
+                            total_msgs=total
+                        )
                     
                     # 极速模式下不需要sleep
                     if sync_mode == 'fast':
                         # time.sleep(0.05) 
                         pass
+                
+                # 【性能优化】保存剩余的批量数据（极速同步模式）
+                if sync_mode == 'fast' and fast_sync_batch:
+                    try:
+                        # 【性能优化】传入预加载的缓存，避免重复查询
+                        inserted, updated = SyncService._bulk_save_notes(
+                            fast_sync_batch, existing_note_ids_cache, existing_notes_cache
+                        )
+                        logger.info(f"[极速同步] 保存剩余 {len(fast_sync_batch)} 条: 插入 {inserted}, 更新 {updated}")
+                    except Exception as e:
+                        logger.error(f"[极速同步] 保存剩余数据失败: {e}")
+                    fast_sync_batch = []
                 
                 # 完成同步
                 if auth_error_msg:
@@ -1088,6 +1602,8 @@ class SyncService:
                                 account_id=acc_id,
                                 account_name=account_name
                             )
+                        # 【WebSocket 推送】广播同步完成事件
+                        sync_log_broadcaster.broadcast_completed(acc_id, 'completed', summary)
                     else:
                         # 极速模式完成
                         sync_log_broadcaster.info(
@@ -1095,6 +1611,8 @@ class SyncService:
                             account_id=acc_id,
                             account_name=account_name
                         )
+                        # 【WebSocket 推送】广播同步完成事件
+                        sync_log_broadcaster.broadcast_completed(acc_id, 'completed')
                 else:
                     # 如果是因为停止而退出循环,且状态仍为processing
                     if account.status == 'processing':
@@ -1108,6 +1626,8 @@ class SyncService:
                             account_id=acc_id,
                             account_name=account_name
                         )
+                        # 【WebSocket 推送】广播停止事件
+                        sync_log_broadcaster.broadcast_completed(acc_id, 'cancelled')
                     # 保存日志
                     if sync_log:
                         sync_log.save_to_db()
@@ -1144,8 +1664,217 @@ class SyncService:
                     db.session.rollback()
     
     @staticmethod
+    def _bulk_save_notes(notes_data_list, existing_note_ids=None):
+        """批量保存笔记到数据库（使用bulk操作提高性能）
+        
+        适用于极速同步模式，不下载媒体文件。
+        
+        Args:
+            notes_data_list: 笔记数据字典列表
+            existing_note_ids: 已存在的笔记ID集合，用于区分插入和更新
+        
+        Returns:
+            tuple: (inserted_count, updated_count)
+        """
+        if not notes_data_list:
+            return 0, 0
+        
+        try:
+            # Pre-fetch existing note IDs if not provided
+            if existing_note_ids is None:
+                note_ids = [n.get('note_id') for n in notes_data_list if n.get('note_id')]
+                existing_notes = Note.query.filter(Note.note_id.in_(note_ids)).all()
+                existing_note_ids = {n.note_id for n in existing_notes}
+                existing_notes_map = {n.note_id: n for n in existing_notes}
+            else:
+                # Query existing notes for update
+                note_ids = [n.get('note_id') for n in notes_data_list if n.get('note_id')]
+                existing_notes = Note.query.filter(Note.note_id.in_(note_ids)).all()
+                existing_notes_map = {n.note_id: n for n in existing_notes}
+            
+            # Separate into insert and update batches
+            insert_mappings = []
+            update_count = 0
+            now = datetime.utcnow()
+            
+            # 【性能优化】收集需要异步下载的封面任务
+            cover_tasks = []
+            
+            for note_data in notes_data_list:
+                note_id = note_data.get('note_id')
+                if not note_id:
+                    continue
+                
+                # Calculate cover remote URL only, download is async
+                cover_remote = note_data.get('cover_remote') or note_data.get('video_cover')
+                if not cover_remote:
+                    imgs = note_data.get('image_list') or []
+                    cover_remote = imgs[0] if len(imgs) > 0 else None
+                
+                # 【性能优化】不再同步下载封面，而是收集任务后异步处理
+                cover_local = None  # Will be updated by async callback
+                
+                # Collect cover download task for async processing
+                if cover_remote:
+                    cover_tasks.append((cover_remote, note_id))
+                
+                if note_id in existing_note_ids:
+                    # Update existing note - update in-place
+                    note = existing_notes_map.get(note_id)
+                    if note:
+                        note.nickname = note_data['nickname']
+                        note.avatar = note_data['avatar']
+                        note.title = note_data['title']
+                        if note_data['desc'] is not None and note_data['desc'] != '':
+                            note.desc = note_data['desc']
+                        note.type = note_data['note_type']
+                        
+                        if note_data['liked_count'] is not None:
+                            note.liked_count = note_data['liked_count']
+                        if note_data['collected_count'] is not None:
+                            note.collected_count = note_data['collected_count']
+                        if note_data['comment_count'] is not None:
+                            note.comment_count = note_data['comment_count']
+                        if note_data['share_count'] is not None:
+                            note.share_count = note_data['share_count']
+                        if note_data['upload_time'] is not None:
+                            note.upload_time = note_data['upload_time']
+                        if note_data['video_addr']:
+                            note.video_addr = note_data['video_addr']
+                        if note_data['image_list']:
+                            new_img_count = len(note_data['image_list'])
+                            try:
+                                old_img_list = json.loads(note.image_list) if note.image_list else []
+                                old_img_count = len(old_img_list)
+                            except:
+                                old_img_count = 0
+                            if new_img_count > old_img_count or old_img_count <= 1:
+                                note.image_list = json.dumps(note_data['image_list'])
+                        if note_data['tags']:
+                            note.tags = json.dumps(note_data['tags'])
+                        if note_data['ip_location']:
+                            note.ip_location = note_data['ip_location']
+                        if cover_remote:
+                            note.cover_remote = cover_remote
+                        if cover_local:
+                            note.cover_local = cover_local
+                        if note_data.get('xsec_token'):
+                            note.xsec_token = note_data['xsec_token']
+                        note.last_updated = now
+                        update_count += 1
+                else:
+                    # Prepare mapping for bulk insert
+                    mapping = {
+                        'note_id': note_id,
+                        'user_id': note_data['user_id'],
+                        'nickname': note_data['nickname'],
+                        'avatar': note_data['avatar'],
+                        'title': note_data['title'],
+                        'desc': note_data['desc'] or '',
+                        'type': note_data['note_type'],
+                        'liked_count': note_data['liked_count'] if note_data['liked_count'] is not None else 0,
+                        'collected_count': note_data['collected_count'] if note_data['collected_count'] is not None else 0,
+                        'comment_count': note_data['comment_count'] if note_data['comment_count'] is not None else 0,
+                        'share_count': note_data['share_count'] if note_data['share_count'] is not None else 0,
+                        'upload_time': note_data['upload_time'] or '',
+                        'video_addr': note_data['video_addr'] or '',
+                        'image_list': json.dumps(note_data['image_list']) if note_data['image_list'] else '[]',
+                        'tags': json.dumps(note_data['tags']) if note_data['tags'] else '[]',
+                        'ip_location': note_data['ip_location'] or '',
+                        'cover_remote': cover_remote or '',
+                        'cover_local': cover_local or '',
+                        'xsec_token': note_data.get('xsec_token') or '',
+                        'last_updated': now,
+                    }
+                    insert_mappings.append(mapping)
+            
+            # Bulk insert new notes
+            if insert_mappings:
+                db.session.bulk_insert_mappings(Note, insert_mappings)
+                logger.info(f"[批量插入] 插入 {len(insert_mappings)} 条新笔记")
+            
+            # Commit all changes (updates are already tracked by session)
+            db.session.commit()
+            
+            # 【性能优化】提交所有封面下载任务到异步队列
+            if cover_tasks:
+                queue = get_media_download_queue()
+                for cover_url, nid in cover_tasks:
+                    queue.submit_cover_download(cover_url, nid, callback=SyncService._update_cover_local)
+                logger.info(f"[批量保存] 提交 {len(cover_tasks)} 个封面下载任务到异步队列")
+            
+            return len(insert_mappings), update_count
+            
+        except Exception as e:
+            db.session.rollback()
+            logger.error(f"[批量保存] 批量保存笔记失败: {e}")
+            raise
+
+    # Maximum concurrent image downloads per note
+    MAX_CONCURRENT_DOWNLOADS = 5
+    
+    @staticmethod
+    def _download_single_image(note_id, note_dir, idx, img_url, headers):
+        """Download a single image with retry logic using session pool.
+        
+        Args:
+            note_id: Note ID for logging
+            note_dir: Directory to save the image
+            idx: Image index
+            img_url: Original image URL
+            headers: HTTP headers for request
+            
+        Returns:
+            bool: True if download succeeded, False otherwise
+        """
+        ext = '.jpg'
+        filename = f"image_{idx}{ext}"
+        filepath = os.path.join(note_dir, filename)
+        
+        # Skip if file already exists
+        if os.path.exists(filepath) and os.path.getsize(filepath) > 1024:
+            logger.info(f"Skipping existing image {idx} for note {note_id}")
+            return True
+        
+        # Build fallback URLs
+        urls_to_try = [img_url]
+        
+        if 'sns-img-qc.xhscdn.com' in img_url or 'sns-img-hw.xhscdn.com' in img_url:
+            img_id = img_url.split('/')[-1].split('?')[0]
+            urls_to_try.extend([
+                f'https://ci.xiaohongshu.com/{img_id}?imageView2/2/w/format/jpg',
+                f'https://sns-img-hw.xhscdn.com/{img_id}?imageView2/2/w/format/jpg',
+                f'https://sns-img-qc.xhscdn.com/{img_id}?imageView2/2/w/format/jpg',
+            ])
+        elif 'ci.xiaohongshu.com' in img_url and '?' not in img_url:
+            urls_to_try.append(f'{img_url}?imageView2/2/w/format/jpg')
+        
+        # Use session pool for connection reuse
+        session_pool = get_request_session_pool()
+        
+        # Try each URL
+        for try_url in urls_to_try:
+            try:
+                logger.info(f"Downloading image {idx} from {try_url}")
+                resp = session_pool.get(try_url, headers=headers, stream=True, timeout=20)
+                if resp.status_code == 200 and int(resp.headers.get('content-length', 0)) > 1024:
+                    with open(filepath, 'wb') as f:
+                        for chunk in resp.iter_content(8192):
+                            f.write(chunk)
+                    logger.info(f"Successfully downloaded image {idx}")
+                    return True
+                else:
+                    logger.info(f"URL returned {resp.status_code}, trying next URL...")
+            except Exception as e:
+                logger.info(f"Failed with {try_url}: {e}")
+                continue
+        
+        logger.warning(f"Failed to download image {idx} for {note_id} after trying all URLs")
+        return False
+    
+    @staticmethod
     def _download_all_media(note_id, note_data):
-        """下载笔记的所有媒体资源（图片/视频）到本地归档"""
+        """下载笔记的所有媒体资源（图片/视频）到本地归档，使用并行下载加速"""
         try:
             logger.info(f"Starting media download for note {note_id}...")
             # 创建笔记专属目录
@@ -1156,54 +1885,30 @@ class SyncService:
             headers = get_common_headers()
             downloaded_count = 0
             
-            # 1. 下载图片列表
+            # 1. 并行下载图片列表
             if note_data.get('image_list'):
-                logger.info(f"Downloading {len(note_data['image_list'])} images for note {note_id}")
-                for idx, img_url in enumerate(note_data['image_list']):
-                    ext = '.jpg'
-                    filename = f"image_{idx}{ext}"
-                    filepath = os.path.join(note_dir, filename)
+                image_list = note_data['image_list']
+                logger.info(f"Downloading {len(image_list)} images for note {note_id} (parallel, max {SyncService.MAX_CONCURRENT_DOWNLOADS} concurrent)")
+                
+                # Use ThreadPoolExecutor for parallel downloads
+                with ThreadPoolExecutor(max_workers=SyncService.MAX_CONCURRENT_DOWNLOADS) as executor:
+                    # Submit all download tasks
+                    futures = {
+                        executor.submit(
+                            SyncService._download_single_image,
+                            note_id, note_dir, idx, img_url, headers
+                        ): idx
+                        for idx, img_url in enumerate(image_list)
+                    }
                     
-                    if os.path.exists(filepath) and os.path.getsize(filepath) > 1024:
-                        logger.info(f"Skipping existing image {idx} for note {note_id}")
-                        continue
-                    
-                    # 构建多个备用 URL 进行重试
-                    urls_to_try = [img_url]
-                    
-                    # 如果 URL 包含 sns-img-qc.xhscdn.com，添加带格式参数的备用 URL
-                    if 'sns-img-qc.xhscdn.com' in img_url or 'sns-img-hw.xhscdn.com' in img_url:
-                        img_id = img_url.split('/')[-1].split('?')[0]
-                        urls_to_try.extend([
-                            f'https://ci.xiaohongshu.com/{img_id}?imageView2/2/w/format/jpg',
-                            f'https://sns-img-hw.xhscdn.com/{img_id}?imageView2/2/w/format/jpg',
-                            f'https://sns-img-qc.xhscdn.com/{img_id}?imageView2/2/w/format/jpg',
-                        ])
-                    # 如果是 ci.xiaohongshu.com 但没有格式参数
-                    elif 'ci.xiaohongshu.com' in img_url and '?' not in img_url:
-                        urls_to_try.append(f'{img_url}?imageView2/2/w/format/jpg')
-                    
-                    download_success = False
-                    for try_url in urls_to_try:
+                    # Collect results
+                    for future in as_completed(futures):
+                        idx = futures[future]
                         try:
-                            logger.info(f"Downloading image {idx} from {try_url}")
-                            resp = requests.get(try_url, headers=headers, stream=True, timeout=20)
-                            if resp.status_code == 200 and int(resp.headers.get('content-length', 0)) > 1024:
-                                with open(filepath, 'wb') as f:
-                                    for chunk in resp.iter_content(8192):
-                                        f.write(chunk)
+                            if future.result():
                                 downloaded_count += 1
-                                download_success = True
-                                logger.info(f"Successfully downloaded image {idx}")
-                                break
-                            else:
-                                logger.info(f"URL returned {resp.status_code}, trying next URL...")
                         except Exception as e:
-                            logger.info(f"Failed with {try_url}: {e}")
-                            continue
-                    
-                    if not download_success:
-                        logger.warning(f"Failed to download image {idx} for {note_id} after trying all URLs")
+                            logger.error(f"Error downloading image {idx} for {note_id}: {e}")
             else:
                 logger.info(f"No image_list found for note {note_id}")
             
@@ -1245,12 +1950,17 @@ class SyncService:
             logger.error(f"Error in _download_all_media for {note_id}: {e}")
 
     @staticmethod
-    def _save_note(note_data, download_media=False):
+    def _save_note(note_data, download_media=False, auto_commit=True):
         """保存笔记到数据库（使用merge避免重复插入）
         
         【重要说明】
         列表页API只返回部分数据（点赞数）,不返回收藏、评论、转发数和发布时间。
         当这些字段为None时,表示"数据不可用",应保留数据库中的现有值。
+        
+        Args:
+            note_data: 笔记数据字典
+            download_media: 是否下载媒体文件
+            auto_commit: 是否自动提交，设为False可用于批量操作时由调用者统一提交
         """
         try:
             # 【关键检查】确保note_id不为空
@@ -1259,12 +1969,15 @@ class SyncService:
                 logger.info(f"Skipping note save: note_id is empty. Data: {note_data.get('title', 'unknown')}")
                 return
 
-            # 计算封面（远程 + 本地缓存）
+            # 计算封面（远程URL）
             cover_remote = note_data.get('cover_remote') or note_data.get('video_cover')
             if not cover_remote:
                 imgs = note_data.get('image_list') or []
                 cover_remote = imgs[0] if len(imgs) > 0 else None
-            cover_local = SyncService._download_cover(cover_remote, note_id) if cover_remote else None
+            
+            # 【性能优化】封面下载改为异步，不阻塞主流程
+            # cover_local 初始为 None，后续由异步队列下载完成后更新
+            cover_local = None
             
             # 使用merge实现upsert语义,避免唯一约束冲突
             note = Note.query.filter_by(note_id=note_id).first()
@@ -1349,13 +2062,19 @@ class SyncService:
                 )
                 db.session.add(note)
             
-            db.session.commit()
+            if auto_commit:
+                db.session.commit()
+            
+            # 【性能优化】封面和媒体下载改为异步，不阻塞主流程
+            queue = get_media_download_queue()
+            
+            # Submit cover download to async queue (with callback to update DB)
+            if cover_remote:
+                queue.submit_cover_download(cover_remote, note_id, callback=SyncService._update_cover_local)
             
             if download_media:
-                logger.info(f"Triggering media download for note {note_id}")
-                SyncService._download_all_media(note_id, note_data)
-            else:
-                logger.info(f"Skipping media download for note {note_id} (download_media=False)")
+                logger.info(f"Queueing media download for note {note_id}")
+                queue.submit_media_download(note_id, note_data)
                 
         except Exception as e:
             # 发生异常时回滚session,避免PendingRollbackError
@@ -1363,10 +2082,45 @@ class SyncService:
             logger.info(f"Error saving note {note_data.get('note_id')}: {e}")
             # 重新抛出异常让上层处理
             raise
+    
+    @staticmethod
+    def _update_cover_local(note_id, local_path):
+        """Callback to update cover_local in database after async download
+        
+        Args:
+            note_id: Note ID
+            local_path: Local API path for the downloaded cover
+        """
+        if not local_path:
+            return
+        try:
+            # Use a new session context to avoid thread safety issues
+            from flask import current_app
+            # Check if we're in app context
+            try:
+                app = current_app._get_current_object()
+            except RuntimeError:
+                # Not in app context, skip update (cover will be downloaded on next sync)
+                logger.debug(f"[CoverCallback] Skipping DB update for {note_id} - no app context")
+                return
+            
+            with app.app_context():
+                Note.query.filter_by(note_id=note_id).update(
+                    {'cover_local': local_path},
+                    synchronize_session=False
+                )
+                db.session.commit()
+                logger.debug(f"[CoverCallback] Updated cover_local for {note_id}")
+        except Exception as e:
+            logger.warning(f"[CoverCallback] Failed to update cover_local for {note_id}: {e}")
+            try:
+                db.session.rollback()
+            except:
+                pass
 
     @staticmethod
     def _download_cover(remote_url, note_id):
-        """下载封面到本地并返回可访问的API路径"""
+        """下载封面到本地并返回可访问的API路径（使用请求池复用连接）"""
         if not remote_url:
             return None
         try:
@@ -1383,10 +2137,11 @@ class SyncService:
                 return f"/api/media/{filename}"
             
             headers = get_common_headers()
+            session_pool = get_request_session_pool()
             # 增加重试机制
             for attempt in range(3):
                 try:
-                    resp = requests.get(remote_url, headers=headers, stream=True, timeout=15)
+                    resp = session_pool.get(remote_url, headers=headers, stream=True, timeout=15)
                     if resp.status_code == 200:
                         with open(filepath, 'wb') as f:
                             for chunk in resp.iter_content(8192):

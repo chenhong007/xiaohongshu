@@ -11,6 +11,14 @@ from .extensions import db
 from .api import accounts_bp, notes_bp, auth_bp, search_bp, sync_logs_bp
 from .utils.logger import setup_logger, get_logger
 
+# WebSocket support (optional, may not be available in all environments)
+try:
+    from .websocket import socketio, init_socketio
+    WEBSOCKET_AVAILABLE = True
+except ImportError:
+    WEBSOCKET_AVAILABLE = False
+    socketio = None
+
 
 def migrate_database(db_path):
     """检查并添加缺失的数据库列"""
@@ -184,6 +192,17 @@ def create_app(config_class=None):
     
     # 注册健康检查端点
     register_health_check(app)
+    
+    # 初始化 WebSocket（如果可用）
+    if WEBSOCKET_AVAILABLE:
+        try:
+            init_socketio(app)
+            # Enable WebSocket in broadcaster
+            from .services.sync_log_broadcaster import sync_log_broadcaster
+            sync_log_broadcaster.enable_websocket()
+            logger.info("WebSocket 实时推送已启用")
+        except Exception as e:
+            logger.warning(f"WebSocket 初始化失败，回退到轮询模式: {e}")
     
     logger.info(f"应用初始化完成，数据库: {db_uri}")
     
