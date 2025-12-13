@@ -288,8 +288,22 @@ class SyncService:
         """Record a rate limit event, trigger exponential backoff."""
         with SyncService._rate_limit_lock:
             SyncService._rate_limit_counter += 1
-            logger.warning(f"[RateLimit] Cumulative count: {SyncService._rate_limit_counter}")
-        get_adaptive_delay_manager().record_rate_limit()
+            count = SyncService._rate_limit_counter
+            logger.warning(f"[RateLimit] Cumulative count: {count}")
+        
+        delay_manager = get_adaptive_delay_manager()
+        delay_manager.record_rate_limit()
+        
+        # Broadcast rate limit warning to frontend
+        cooldown = delay_manager.get_rate_limit_wait()
+        sync_log_broadcaster.broadcast_cookie_status(
+            status='rate_limited',
+            message=f'访问频次异常，已触发限流保护 (累计 {count} 次)',
+            extra={
+                'rate_limit_count': count,
+                'cooldown_seconds': int(cooldown),
+            }
+        )
     
     @staticmethod
     def _record_success() -> None:
@@ -437,6 +451,17 @@ class SyncService:
                     cookie.last_checked = datetime.utcnow()
                     db.session.commit()
                     logger.info("Cookie marked as invalid")
+                    
+                    # Broadcast cookie invalid status to frontend
+                    sync_log_broadcaster.broadcast_cookie_status(
+                        status='invalid',
+                        message=f'Cookie 已失效: {msg}',
+                        extra={
+                            'user_id': cookie.user_id,
+                            'nickname': cookie.nickname,
+                            'run_info': cookie.get_run_info(),
+                        }
+                    )
                 return True
             except Exception as e:
                 logger.error(f"Error marking Cookie as invalid: {e}")

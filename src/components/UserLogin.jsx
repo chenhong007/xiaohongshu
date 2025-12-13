@@ -2,6 +2,9 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { User, LogIn, LogOut, KeyRound, CheckCircle, XCircle, Clock, AlertTriangle, RefreshCw, Loader2 } from 'lucide-react';
 import { authApi, COOKIE_INVALID_EVENT } from '../services';
 
+// Cookie status changed event (from SSE sync logs)
+const COOKIE_STATUS_EVENT = 'cookie-status-changed';
+
 // 默认头像
 const DEFAULT_AVATAR = "https://api.dicebear.com/7.x/avataaars/svg?seed=Felix";
 
@@ -117,6 +120,7 @@ export const UserLogin = () => {
   const [runInfo, setRunInfo] = useState(cachedUser?.runInfo || null);
   const [currentRunSeconds, setCurrentRunSeconds] = useState(cachedUser?.currentRunSeconds || 0);
   const [invalidInfo, setInvalidInfo] = useState(null); // 失效信息
+  const [rateLimitInfo, setRateLimitInfo] = useState(null); // 限流信息
   
   // 用于防止重复请求
   const fetchingRef = useRef(false);
@@ -192,15 +196,46 @@ export const UserLogin = () => {
     const handleCookieInvalid = () => {
       console.log('Cookie invalid event received');
       setUser(null);
-      clearUserCache(); // 清除缓存
+      clearUserCache();
       setError('登录已失效，请重新登录');
     };
     
+    // 监听 Cookie 状态变化事件（由 SSE 同步日志触发）
+    const handleCookieStatusChanged = (event) => {
+      const { status, message, extra } = event.detail || {};
+      console.log('Cookie status changed:', status, message);
+      
+      if (status === 'invalid') {
+        // Cookie 失效
+        setUser(null);
+        clearUserCache();
+        setError('登录已失效，请重新登录');
+        if (extra) {
+          setInvalidInfo({
+            userId: extra.user_id,
+            nickname: extra.nickname,
+            avatar: null,
+            runInfo: extra.run_info,
+          });
+        }
+      } else if (status === 'rate_limited') {
+        // 限流警告 - 显示在用户信息下方
+        setRateLimitInfo({
+          message,
+          count: extra?.rate_limit_count || 0,
+          cooldown: extra?.cooldown_seconds || 0,
+          timestamp: Date.now(),
+        });
+      }
+    };
+    
     window.addEventListener(COOKIE_INVALID_EVENT, handleCookieInvalid);
+    window.addEventListener(COOKIE_STATUS_EVENT, handleCookieStatusChanged);
     
     return () => {
       clearInterval(interval);
       window.removeEventListener(COOKIE_INVALID_EVENT, handleCookieInvalid);
+      window.removeEventListener(COOKIE_STATUS_EVENT, handleCookieStatusChanged);
     };
   }, [fetchUser]);
 
@@ -214,6 +249,17 @@ export const UserLogin = () => {
       return () => clearInterval(timer);
     }
   }, [user, runInfo?.is_running]);
+
+  // 自动清除限流警告（冷却时间后）
+  useEffect(() => {
+    if (rateLimitInfo) {
+      const timer = setTimeout(() => {
+        setRateLimitInfo(null);
+      }, (rateLimitInfo.cooldown || 30) * 1000);
+      
+      return () => clearTimeout(timer);
+    }
+  }, [rateLimitInfo]);
 
   // 系统登录
   const handleLogin = async () => {
@@ -362,6 +408,19 @@ export const UserLogin = () => {
   if (user) {
     return (
       <div className="flex flex-col gap-2">
+        {/* 限流警告 */}
+        {rateLimitInfo && (
+          <div className="flex items-center gap-2 p-2 bg-orange-50 rounded-md border border-orange-200 text-xs">
+            <AlertTriangle className="w-4 h-4 text-orange-500 flex-shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-orange-700 font-medium">访问频次异常</p>
+              <p className="text-orange-600 truncate">
+                累计 {rateLimitInfo.count} 次，冷却 {rateLimitInfo.cooldown}秒
+              </p>
+            </div>
+          </div>
+        )}
+        
         <div className="flex items-start gap-3">
           <div className="w-10 h-10 rounded-full bg-gray-200 overflow-hidden flex-shrink-0">
             {user.avatar ? (

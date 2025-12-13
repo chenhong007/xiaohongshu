@@ -1,5 +1,6 @@
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
+import { AlertTriangle, X, Clock } from 'lucide-react';
 import { Sidebar } from './components/Sidebar';
 import { ContentArea } from './components/ContentArea';
 import { DownloadPage } from './components/DownloadPage';
@@ -13,6 +14,16 @@ const LOG_COLORS = {
   debug: 'color: #6B7280;',
 };
 
+// Cookie 状态事件名
+const COOKIE_STATUS_EVENT = 'cookie-status-changed';
+
+// Cookie 状态类型
+const COOKIE_STATUS = {
+  INVALID: 'invalid',      // Cookie 失效
+  RATE_LIMITED: 'rate_limited',  // 被限流
+  VALID: 'valid',          // Cookie 有效
+};
+
 function App() {
   const [searchTerm, setSearchTerm] = useState('');
   const [isSearchVisible, setIsSearchVisible] = useState(false);
@@ -23,6 +34,10 @@ function App() {
   const [accountsLoading, setAccountsLoading] = useState(false);
   const [accountsError, setAccountsError] = useState(null);
   const accountsLoadedRef = useRef(false);  // 标记是否已加载过
+  
+  // ========== Cookie 状态（用于全局显示限流/失效警告） ==========
+  const [cookieStatus, setCookieStatus] = useState(null);
+  // cookieStatus: { status: 'rate_limited' | 'invalid', message: string, extra: object, timestamp: number }
   
   // SSE 连接引用
   const eventSourceRef = useRef(null);
@@ -106,6 +121,32 @@ function App() {
       eventSource.onmessage = (event) => {
         try {
           const log = JSON.parse(event.data);
+          
+          // Handle cookie status events
+          if (log.type === 'cookie_status') {
+            console.log(`%c[Cookie状态] ${log.status}: ${log.message}`, 
+              log.status === 'invalid' ? LOG_COLORS.error : LOG_COLORS.warn);
+            
+            // Update cookie status state
+            setCookieStatus({
+              status: log.status,
+              message: log.message,
+              extra: log.extra || {},
+              timestamp: Date.now(),
+            });
+            
+            // Dispatch global event for UserLogin component
+            window.dispatchEvent(new CustomEvent(COOKIE_STATUS_EVENT, { 
+              detail: { status: log.status, message: log.message, extra: log.extra }
+            }));
+            
+            // If cookie is invalid, also dispatch the existing event
+            if (log.status === COOKIE_STATUS.INVALID) {
+              window.dispatchEvent(new CustomEvent('cookie-invalid'));
+            }
+            return;
+          }
+          
           const level = log.level || 'info';
           const style = LOG_COLORS[level] || LOG_COLORS.info;
           const prefix = level === 'error' ? '❌' : level === 'warn' ? '⚠️' : level === 'info' ? 'ℹ️' : '🔍';
@@ -201,8 +242,66 @@ function App() {
     setRefreshTrigger(prev => prev + 1);
   }, []);
 
+  // 清除 Cookie 状态警告
+  const dismissCookieStatus = useCallback(() => {
+    setCookieStatus(null);
+  }, []);
+
+  // 自动清除限流警告（30秒后）
+  useEffect(() => {
+    if (cookieStatus?.status === COOKIE_STATUS.RATE_LIMITED) {
+      const timer = setTimeout(() => {
+        setCookieStatus(null);
+      }, 30000);
+      return () => clearTimeout(timer);
+    }
+  }, [cookieStatus]);
+
+  // Cookie 状态警告组件
+  const CookieStatusBanner = useMemo(() => {
+    if (!cookieStatus) return null;
+    
+    const isInvalid = cookieStatus.status === COOKIE_STATUS.INVALID;
+    const bgColor = isInvalid ? 'bg-red-50 border-red-200' : 'bg-orange-50 border-orange-200';
+    const textColor = isInvalid ? 'text-red-700' : 'text-orange-700';
+    const iconColor = isInvalid ? 'text-red-500' : 'text-orange-500';
+    
+    return (
+      <div className={`fixed top-0 left-0 right-0 z-50 ${bgColor} border-b px-4 py-3 shadow-sm`}>
+        <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <AlertTriangle className={`w-5 h-5 ${iconColor} flex-shrink-0`} />
+            <div className="flex-1">
+              <p className={`text-sm font-medium ${textColor}`}>
+                {isInvalid ? 'Cookie 已失效' : '访问频次异常'}
+              </p>
+              <p className={`text-xs ${textColor} opacity-80`}>
+                {cookieStatus.message}
+                {cookieStatus.extra?.cooldown_seconds && (
+                  <span className="ml-2 inline-flex items-center gap-1">
+                    <Clock className="w-3 h-3" />
+                    冷却 {cookieStatus.extra.cooldown_seconds} 秒
+                  </span>
+                )}
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={dismissCookieStatus}
+            className={`p-1 rounded hover:bg-white/50 ${textColor}`}
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+    );
+  }, [cookieStatus, dismissCookieStatus]);
+
   return (
     <div className="flex h-screen w-full bg-gray-100 font-sans">
+      {/* Cookie 状态警告横幅 */}
+      {CookieStatusBanner}
+      
       <Sidebar 
         onSearch={setSearchTerm}
         isSearchVisible={isSearchVisible}

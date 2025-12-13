@@ -188,6 +188,47 @@ class SyncLogBroadcaster:
         """广播 DEBUG 级别日志"""
         self.broadcast(LOG_LEVEL_DEBUG, message, **kwargs)
     
+    def broadcast_cookie_status(self, status: str, message: str, extra: dict = None):
+        """Broadcast Cookie status change event
+        
+        Args:
+            status: Cookie status type
+                - 'invalid': Cookie expired or invalid
+                - 'rate_limited': Access frequency limited
+                - 'valid': Cookie is valid (after re-validation)
+            message: Human readable message
+            extra: Additional data (rate_limit_count, cooldown_seconds, etc.)
+        """
+        log_entry = {
+            'timestamp': datetime.utcnow().isoformat() + 'Z',
+            'level': LOG_LEVEL_ERROR if status == 'invalid' else LOG_LEVEL_WARN,
+            'type': 'cookie_status',
+            'status': status,
+            'message': message,
+        }
+        
+        if extra:
+            log_entry['extra'] = extra
+        
+        # Broadcast via SSE
+        with self._sub_lock:
+            dead_clients = []
+            for client_id, q in self._subscribers.items():
+                try:
+                    q.put_nowait(log_entry)
+                except queue.Full:
+                    try:
+                        q.get_nowait()
+                        q.put_nowait(log_entry)
+                    except:
+                        dead_clients.append(client_id)
+            
+            for client_id in dead_clients:
+                del self._subscribers[client_id]
+        
+        # Broadcast via WebSocket
+        self._broadcast_via_websocket(log_entry)
+    
     @property
     def subscriber_count(self) -> int:
         """当前订阅者数量"""
