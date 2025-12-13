@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { RefreshCw, CheckCircle, Circle, Trash2, Upload, Download, AlertCircle, Zap, Database, StopCircle, Wrench, FileText, X, ChevronDown, ChevronUp, Clock, Ban, AlertTriangle, Key, Image as ImageIcon } from 'lucide-react';
+import { RefreshCw, CheckCircle, Circle, Trash2, Upload, Download, AlertCircle, Zap, Database, StopCircle, Wrench, FileText, X, ChevronDown, ChevronUp, Clock, Ban, AlertTriangle, Key, Image as ImageIcon, Wifi, WifiOff } from 'lucide-react';
 import { accountApi, authApi, COOKIE_INVALID_EVENT } from '../services';
+import syncWebSocket from '../services/websocket';
 
 // 同步日志详情模态框
 const SyncLogModal = ({ isOpen, onClose, account }) => {
@@ -435,8 +436,81 @@ export const ContentArea = ({
     prevAccountsRef.current = accounts;
   }, [accounts, emitCookieInvalidSafely]);
 
-  // 轮询更新处理中的账号状态（使用轻量级 API）
+  // WebSocket 连接状态
+  const [wsConnected, setWsConnected] = useState(false);
+  const wsInitializedRef = useRef(false);
+
+  // 初始化 WebSocket 连接
   useEffect(() => {
+    if (wsInitializedRef.current) return;
+    wsInitializedRef.current = true;
+
+    const initWebSocket = async () => {
+      const connected = await syncWebSocket.connect();
+      setWsConnected(connected);
+      
+      if (connected) {
+        console.log('[WebSocket] Connected, subscribing to all sync updates');
+        syncWebSocket.subscribeAll();
+      } else {
+        console.log('[WebSocket] Not available, will use polling fallback');
+      }
+    };
+
+    initWebSocket();
+
+    return () => {
+      syncWebSocket.disconnect();
+    };
+  }, []);
+
+  // WebSocket 事件监听
+  useEffect(() => {
+    if (!wsConnected) return;
+
+    // Handle progress updates
+    const unsubProgress = syncWebSocket.on('progress', (data) => {
+      console.log('[WebSocket] Progress update:', data);
+      setAccounts(prev => prev.map(acc => {
+        if (acc.id === data.account_id) {
+          return {
+            ...acc,
+            status: data.status,
+            progress: data.progress,
+            loaded_msgs: data.loaded_msgs,
+            total_msgs: data.total_msgs,
+          };
+        }
+        return acc;
+      }));
+    });
+
+    // Handle sync completion
+    const unsubCompleted = syncWebSocket.on('completed', (data) => {
+      console.log('[WebSocket] Sync completed:', data);
+      // Fetch full account data including sync_logs
+      setTimeout(() => fetchAccounts(true), 500);
+    });
+
+    // Handle log messages (optional, for debugging)
+    const unsubLog = syncWebSocket.on('log', (data) => {
+      if (data.level === 'error' || data.level === 'warn') {
+        console.log(`[WebSocket] Sync log [${data.level}]:`, data.message);
+      }
+    });
+
+    return () => {
+      unsubProgress();
+      unsubCompleted();
+      unsubLog();
+    };
+  }, [wsConnected, fetchAccounts, setAccounts]);
+
+  // 轮询回退（当 WebSocket 不可用时）
+  useEffect(() => {
+    // Skip polling if WebSocket is connected
+    if (wsConnected) return;
+
     const processingAccounts = accounts.filter(acc => acc.status === 'processing' || acc.status === 'pending');
     const isProcessing = processingAccounts.length > 0;
     
@@ -445,7 +519,7 @@ export const ContentArea = ({
       const summary = processingAccounts.map(acc => 
         `${acc.name || acc.user_id}: ${acc.progress || 0}% (${acc.loaded_msgs || 0}/${acc.total_msgs || 0})`
       ).join(', ');
-      console.log(`[同步调试] 正在处理 ${processingAccounts.length} 个账号:`, summary);
+      console.log(`[轮询模式] 正在处理 ${processingAccounts.length} 个账号:`, summary);
       
       // 【性能优化】使用轻量级状态 API，避免序列化 sync_logs 等大字段
       const timer = setInterval(async () => {
@@ -481,20 +555,20 @@ export const ContentArea = ({
           
           // 如果有账号刚完成，延迟获取完整数据（包含 sync_logs）
           if (justCompleted) {
-            console.log('[同步调试] 检测到同步完成，获取完整数据');
+            console.log('[轮询模式] 检测到同步完成，获取完整数据');
             setTimeout(() => fetchAccounts(true), 500);
           }
         } catch (err) {
-          console.error('[同步调试] 获取状态失败:', err);
+          console.error('[轮询模式] 获取状态失败:', err);
         }
       }, 4000);
       
       return () => {
-        console.log('[同步调试] 停止轮询');
+        console.log('[轮询模式] 停止轮询');
         clearInterval(timer);
       };
     }
-  }, [accounts, fetchAccounts, setAccounts]);
+  }, [accounts, fetchAccounts, setAccounts, wsConnected]);
 
   // 切换选择
   const toggleSelect = (id) => {
@@ -883,9 +957,31 @@ export const ContentArea = ({
             </>
           )}
           
+          {/* WebSocket 连接状态指示器 */}
+          <div 
+            className={`ml-auto flex items-center gap-1 px-2 py-1 rounded text-xs ${
+              wsConnected 
+                ? 'bg-green-50 text-green-600' 
+                : 'bg-gray-50 text-gray-400'
+            }`}
+            title={wsConnected ? 'WebSocket 实时推送已连接' : '使用轮询模式'}
+          >
+            {wsConnected ? (
+              <>
+                <Wifi className="w-3 h-3" />
+                <span>实时</span>
+              </>
+            ) : (
+              <>
+                <WifiOff className="w-3 h-3" />
+                <span>轮询</span>
+              </>
+            )}
+          </div>
+
           <button 
             onClick={handleReset} 
-            className="px-3 py-2 text-gray-400 hover:text-red-500 rounded text-sm flex items-center gap-1 ml-auto"
+            className="px-3 py-2 text-gray-400 hover:text-red-500 rounded text-sm flex items-center gap-1"
             title="清空所有数据"
           >
             <Trash2 className="w-3 h-3" /> 清空
