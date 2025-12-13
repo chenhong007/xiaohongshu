@@ -617,11 +617,11 @@ cmd_backup() {
     
     mkdir -p "$backup_path"
     
-    # 备份数据库
-    if docker ps --format '{{.Names}}' | grep -q "xhs-backend"; then
-        log_info "备份数据库..."
-        docker cp xhs-backend:/app/xhs_data.db "${backup_path}/xhs_data.db" 2>/dev/null || {
-            log_warn "数据库文件可能不存在"
+    # 备份 PostgreSQL 数据库
+    if docker ps --format '{{.Names}}' | grep -q "xhs-postgres"; then
+        log_info "备份 PostgreSQL 数据库..."
+        docker exec xhs-postgres pg_dump -U xhs -d xhs_data > "${backup_path}/xhs_data.sql" 2>/dev/null || {
+            log_warn "PostgreSQL 数据库备份失败"
         }
     fi
     
@@ -659,9 +659,10 @@ cmd_rollback() {
     
     log_info "使用备份: ${latest_backup}"
     
-    # 恢复数据库
-    if [ -f "${backup_path}/xhs_data.db" ]; then
-        docker cp "${backup_path}/xhs_data.db" xhs-backend:/app/xhs_data.db
+    # 恢复 PostgreSQL 数据库
+    if [ -f "${backup_path}/xhs_data.sql" ]; then
+        log_info "恢复 PostgreSQL 数据库..."
+        docker exec -i xhs-postgres psql -U xhs -d xhs_data < "${backup_path}/xhs_data.sql"
         log_info "数据库已恢复"
     fi
     
