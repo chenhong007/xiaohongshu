@@ -13,6 +13,8 @@ services:
     restart: unless-stopped
     ports:
       - "80:80"
+    environment:
+      - TZ=Asia/Shanghai
     depends_on:
       - backend
     networks:
@@ -26,6 +28,7 @@ services:
     container_name: xhs-backend
     restart: unless-stopped
     environment:
+      - TZ=Asia/Shanghai
       - FLASK_ENV=production
       - SECRET_KEY=${SECRET_KEY}
       - COOKIE_ENCRYPTION_KEY=${COOKIE_ENCRYPTION_KEY}
