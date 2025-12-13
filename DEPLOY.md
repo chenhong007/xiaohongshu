@@ -360,3 +360,4 @@ docker compose up -d --build
 3. DNS 解析是否正确
 4. 环境变量配置是否完整
 
+v20251213可用版本
