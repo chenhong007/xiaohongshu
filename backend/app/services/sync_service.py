@@ -152,6 +152,45 @@ class SyncService:
             return 0
     
     @staticmethod
+    def _parse_count(value) -> int:
+        """Parse count value that may be a string like '10.1万' to integer.
+        
+        Args:
+            value: Count value, can be int, str like '10.1万', '1.2亿', or None
+            
+        Returns:
+            Integer count value
+        """
+        if value is None:
+            return 0
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                return 0
+            try:
+                # Try direct conversion first
+                return int(value)
+            except ValueError:
+                pass
+            try:
+                # Handle Chinese units: 万 (10000), 亿 (100000000)
+                if '亿' in value:
+                    num = float(value.replace('亿', ''))
+                    return int(num * 100000000)
+                elif '万' in value:
+                    num = float(value.replace('万', ''))
+                    return int(num * 10000)
+                else:
+                    return int(float(value))
+            except (ValueError, TypeError):
+                return 0
+        return 0
+    
+    @staticmethod
     def _convert_list_note(simple_note: Dict, user_id: str = None) -> Dict:
         """Convert list API note data to save format.
         
@@ -185,12 +224,12 @@ class SyncService:
         elif note_type == 'video':
             note_type = '视频'
         
-        # Interact info - can be nested or flat
+        # Interact info - can be nested or flat, parse string counts like "10.1万"
         interact_info = simple_note.get('interact_info') or {}
-        liked_count = interact_info.get('liked_count') or simple_note.get('liked_count')
-        collected_count = interact_info.get('collected_count') or simple_note.get('collected_count')
-        comment_count = interact_info.get('comment_count') or simple_note.get('comment_count')
-        share_count = interact_info.get('share_count') or simple_note.get('share_count')
+        liked_count = SyncService._parse_count(interact_info.get('liked_count') or simple_note.get('liked_count'))
+        collected_count = SyncService._parse_count(interact_info.get('collected_count') or simple_note.get('collected_count'))
+        comment_count = SyncService._parse_count(interact_info.get('comment_count') or simple_note.get('comment_count'))
+        share_count = SyncService._parse_count(interact_info.get('share_count') or simple_note.get('share_count'))
         
         # Cover image
         cover_info = simple_note.get('cover') or {}
