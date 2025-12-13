@@ -1,9 +1,27 @@
 # Docker Compose 配置 - 小红书采集系统
 # 域名: xhs.aitop.ink
 
-version: '3.8'
-
 services:
+  # PostgreSQL 数据库服务
+  postgres:
+    image: postgres:16-alpine
+    container_name: xhs-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: xhs_data
+      POSTGRES_USER: xhs
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-xhs_secret_2024}
+      TZ: Asia/Shanghai
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - xhs-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U xhs -d xhs_data"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # 前端服务 (Nginx)
   frontend:
     build:
@@ -13,8 +31,13 @@ services:
     restart: unless-stopped
     ports:
       - "80:80"
+      - "443:443"
     environment:
       - TZ=Asia/Shanghai
+    volumes:
+      # SSL 证书挂载
+      - ./certbot/conf:/etc/letsencrypt:ro
+      - ./certbot/www:/var/www/certbot:ro
     depends_on:
       - backend
     networks:
@@ -33,19 +56,20 @@ services:
       - SECRET_KEY=${SECRET_KEY}
       - COOKIE_ENCRYPTION_KEY=${COOKIE_ENCRYPTION_KEY}
       - ADMIN_API_KEY=${ADMIN_API_KEY}
-      - DATABASE_URL=sqlite:///xhs_data.db
+      - DATABASE_URL=postgresql://xhs:${POSTGRES_PASSWORD:-xhs_secret_2024}@postgres:5432/xhs_data
       - CORS_ORIGINS=http://xhs.aitop.ink,https://xhs.aitop.ink,http://localhost
       - LOG_LEVEL=WARNING
     volumes:
-      # 持久化数据库
-      - xhs-data:/app
-      # 持久化媒体文件
+      # 持久化媒体文件（数据库已使用 PostgreSQL，不再需要挂载 /app）
       - xhs-media:/app/datas/media_datas
       - xhs-excel:/app/datas/excel_datas
     networks:
       - xhs-network
+    depends_on:
+      postgres:
+        condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      test: ["CMD", "python", "-c", "import requests; r=requests.get('http://localhost:8000/api/health'); exit(0 if r.status_code==200 else 1)"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -55,7 +79,7 @@ networks:
     driver: bridge
 
 volumes:
-  xhs-data:
+  postgres-data:
   xhs-media:
   xhs-excel:
 

@@ -39,15 +39,24 @@ class Config:
     
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     
-    # 【性能优化】SQLite 引擎配置
-    # WAL 模式允许读写并发，大幅提高性能
-    SQLALCHEMY_ENGINE_OPTIONS = {
-        'connect_args': {
-            'check_same_thread': False,  # 允许多线程访问
-            'timeout': 30,  # 等待锁的超时时间（秒）
-        },
-        'pool_pre_ping': True,  # 连接前检查连接有效性
-    }
+    # Database engine options based on database type
+    # PostgreSQL uses connection pooling, SQLite uses thread-safe settings
+    if DATABASE_URL and DATABASE_URL.startswith('postgresql'):
+        SQLALCHEMY_ENGINE_OPTIONS = {
+            'pool_size': 10,
+            'pool_recycle': 300,
+            'pool_pre_ping': True,
+            'max_overflow': 20,
+        }
+    else:
+        # SQLite configuration (backward compatible)
+        SQLALCHEMY_ENGINE_OPTIONS = {
+            'connect_args': {
+                'check_same_thread': False,  # Allow multi-thread access
+                'timeout': 30,  # Lock wait timeout (seconds)
+            },
+            'pool_pre_ping': True,  # Check connection validity before use
+        }
     
     # ==================== CORS 配置 ====================
     # 允许的跨域来源（逗号分隔）

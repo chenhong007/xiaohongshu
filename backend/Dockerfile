@@ -10,9 +10,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     FLASK_ENV=production \
     PYTHONPATH=/app:/app/Spider_XHS
 
-# 安装系统依赖（用于 PyExecJS）
+# 安装系统依赖（用于 PyExecJS 和 PostgreSQL）
 RUN apt-get update && apt-get install -y --no-install-recommends \
     nodejs \
+    libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # 复制依赖文件

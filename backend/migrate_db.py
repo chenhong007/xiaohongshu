@@ -73,6 +73,9 @@ def migrate():
                 'error_message': 'TEXT',
                 'created_at': 'DATETIME',
                 'updated_at': 'DATETIME',
+                # Deep sync logs and heartbeat
+                'sync_logs': 'TEXT',
+                'sync_heartbeat': 'DATETIME',
             }
             
             for column_name, column_type in accounts_columns.items():
