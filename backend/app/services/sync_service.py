@@ -221,11 +221,12 @@ class SyncService:
                 except:
                     pass
             
-            # 如果是视频，检查是否有视频文件
-            if note.type == '视频':
-                video_path = os.path.join(note_dir, 'video.mp4')
-                if not os.path.exists(video_path) or os.path.getsize(video_path) < 1024:
-                    return True
+            # 视频类型笔记：不再检查视频文件是否存在（已禁用视频下载，节省磁盘空间）
+            # 只要有封面图就认为媒体完整
+            # if note.type == '视频':
+            #     video_path = os.path.join(note_dir, 'video.mp4')
+            #     if not os.path.exists(video_path) or os.path.getsize(video_path) < 1024:
+            #         return True
                     
         except Exception as e:
             logger.warning(f"Error checking media for note {note.note_id}: {e}")
@@ -1089,31 +1090,34 @@ class SyncService:
             else:
                 logger.info(f"No image_list found for note {note_id}")
             
-            # 2. 下载视频
-            if note_data.get('note_type') == '视频' and note_data.get('video_addr'):
-                video_url = note_data['video_addr']
-                filename = f"video.mp4"
-                filepath = os.path.join(note_dir, filename)
-                
-                logger.info(f"Downloading video for note {note_id} from {video_url}")
-                
-                if not (os.path.exists(filepath) and os.path.getsize(filepath) > 1024):
-                    try:
-                        resp = requests.get(video_url, headers=headers, stream=True, timeout=60)
-                        if resp.status_code == 200:
-                            with open(filepath, 'wb') as f:
-                                for chunk in resp.iter_content(1024*1024): # 1MB chunks
-                                    f.write(chunk)
-                            downloaded_count += 1
-                            logger.info(f"Successfully downloaded video for {note_id}")
-                        else:
-                            logger.warning(f"Failed to download video for {note_id}: {resp.status_code}")
-                    except Exception as e:
-                        logger.warning(f"Error downloading video for {note_id}: {e}")
-                else:
-                    logger.info(f"Skipping existing video for note {note_id}")
-            elif note_data.get('note_type') == '视频':
-                logger.warning(f"Video note {note_id} missing video_addr")
+            # 2. 跳过视频下载（节省磁盘空间，只采集封面图）
+            # 如果需要下载视频，取消下面的注释
+            # if note_data.get('note_type') == '视频' and note_data.get('video_addr'):
+            #     video_url = note_data['video_addr']
+            #     filename = f"video.mp4"
+            #     filepath = os.path.join(note_dir, filename)
+            #     
+            #     logger.info(f"Downloading video for note {note_id} from {video_url}")
+            #     
+            #     if not (os.path.exists(filepath) and os.path.getsize(filepath) > 1024):
+            #         try:
+            #             resp = requests.get(video_url, headers=headers, stream=True, timeout=60)
+            #             if resp.status_code == 200:
+            #                 with open(filepath, 'wb') as f:
+            #                     for chunk in resp.iter_content(1024*1024): # 1MB chunks
+            #                         f.write(chunk)
+            #                 downloaded_count += 1
+            #                 logger.info(f"Successfully downloaded video for {note_id}")
+            #             else:
+            #                 logger.warning(f"Failed to download video for {note_id}: {resp.status_code}")
+            #         except Exception as e:
+            #             logger.warning(f"Error downloading video for {note_id}: {e}")
+            #     else:
+            #         logger.info(f"Skipping existing video for note {note_id}")
+            # elif note_data.get('note_type') == '视频':
+            #     logger.warning(f"Video note {note_id} missing video_addr")
+            if note_data.get('note_type') == '视频':
+                logger.info(f"Skipping video download for note {note_id} (video download disabled)")
 
             if downloaded_count > 0:
                 logger.info(f"Archived {downloaded_count} media files for note {note_id}")
