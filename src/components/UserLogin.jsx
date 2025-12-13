@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { User, LogIn, LogOut, KeyRound, CheckCircle, XCircle, Clock, AlertTriangle, RefreshCw, Loader2 } from 'lucide-react';
+import { User, LogIn, LogOut, KeyRound, CheckCircle, XCircle, Clock, AlertTriangle, RefreshCw, Loader2, X } from 'lucide-react';
 import { authApi, COOKIE_INVALID_EVENT } from '../services';
 
 // Cookie status changed event (from SSE sync logs)
@@ -250,16 +250,10 @@ export const UserLogin = () => {
     }
   }, [user, runInfo?.is_running]);
 
-  // 自动清除限流警告（冷却时间后）
-  useEffect(() => {
-    if (rateLimitInfo) {
-      const timer = setTimeout(() => {
-        setRateLimitInfo(null);
-      }, (rateLimitInfo.cooldown || 30) * 1000);
-      
-      return () => clearTimeout(timer);
-    }
-  }, [rateLimitInfo]);
+  // 手动清除限流警告
+  const dismissRateLimitInfo = useCallback(() => {
+    setRateLimitInfo(null);
+  }, []);
 
   // 系统登录
   const handleLogin = async () => {
@@ -410,14 +404,21 @@ export const UserLogin = () => {
       <div className="flex flex-col gap-2">
         {/* 限流警告 */}
         {rateLimitInfo && (
-          <div className="flex items-center gap-2 p-2 bg-orange-50 rounded-md border border-orange-200 text-xs">
-            <AlertTriangle className="w-4 h-4 text-orange-500 flex-shrink-0" />
+          <div className="flex items-start gap-2 p-2 bg-orange-50 rounded-md border border-orange-200 text-xs">
+            <AlertTriangle className="w-4 h-4 text-orange-500 flex-shrink-0 mt-0.5" />
             <div className="flex-1 min-w-0">
               <p className="text-orange-700 font-medium">访问频次异常</p>
-              <p className="text-orange-600 truncate">
+              <p className="text-orange-600">
                 累计 {rateLimitInfo.count} 次，冷却 {rateLimitInfo.cooldown}秒
               </p>
             </div>
+            <button
+              onClick={dismissRateLimitInfo}
+              className="text-orange-400 hover:text-orange-600 p-0.5 flex-shrink-0"
+              title="关闭"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
           </div>
         )}
         
