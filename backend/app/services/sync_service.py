@@ -152,6 +152,92 @@ class SyncService:
             return 0
     
     @staticmethod
+    def _convert_list_note(simple_note: Dict, user_id: str = None) -> Dict:
+        """Convert list API note data to save format.
+        
+        List API returns different structure than detail API.
+        This function converts list data to the format expected by _save_note.
+        
+        Args:
+            simple_note: Note data from list API (get_user_all_notes)
+            user_id: User ID to use if not in note data
+            
+        Returns:
+            Dict in format expected by _save_note
+        """
+        note_id = simple_note.get('note_id') or simple_note.get('id') or ''
+        
+        # Extract user info from nested structure or flat structure
+        user_info = simple_note.get('user') or {}
+        note_user_id = user_info.get('user_id') or simple_note.get('user_id') or user_id or ''
+        nickname = user_info.get('nickname') or simple_note.get('nickname') or ''
+        avatar = user_info.get('avatar') or simple_note.get('avatar') or ''
+        
+        # Title can be in different fields
+        title = simple_note.get('display_title') or simple_note.get('title') or ''
+        if not title or title.strip() == '':
+            title = '无标题'
+        
+        # Note type
+        note_type = simple_note.get('type') or 'normal'
+        if note_type == 'normal':
+            note_type = '图集'
+        elif note_type == 'video':
+            note_type = '视频'
+        
+        # Interact info - can be nested or flat
+        interact_info = simple_note.get('interact_info') or {}
+        liked_count = interact_info.get('liked_count') or simple_note.get('liked_count')
+        collected_count = interact_info.get('collected_count') or simple_note.get('collected_count')
+        comment_count = interact_info.get('comment_count') or simple_note.get('comment_count')
+        share_count = interact_info.get('share_count') or simple_note.get('share_count')
+        
+        # Cover image
+        cover_info = simple_note.get('cover') or {}
+        cover_url = ''
+        if isinstance(cover_info, dict):
+            info_list = cover_info.get('info_list') or cover_info.get('url_default') or []
+            if isinstance(info_list, list) and len(info_list) > 0:
+                # Try to get higher quality image
+                cover_url = info_list[-1].get('url') if isinstance(info_list[-1], dict) else str(info_list[-1])
+            elif isinstance(info_list, str):
+                cover_url = info_list
+            # Fallback to url field
+            if not cover_url:
+                cover_url = cover_info.get('url') or cover_info.get('url_default') or ''
+        elif isinstance(cover_info, str):
+            cover_url = cover_info
+        
+        # Build note URL
+        xsec_token = simple_note.get('xsec_token') or ''
+        note_url = f"https://www.xiaohongshu.com/explore/{note_id}"
+        if xsec_token:
+            note_url = f"{note_url}?xsec_token={xsec_token}&xsec_source=pc_search"
+        
+        return {
+            'note_id': note_id,
+            'note_url': note_url,
+            'note_type': note_type,
+            'user_id': note_user_id,
+            'nickname': nickname,
+            'avatar': avatar,
+            'title': title,
+            'desc': simple_note.get('desc') or '',
+            'liked_count': liked_count,
+            'collected_count': collected_count,
+            'comment_count': comment_count,
+            'share_count': share_count,
+            'video_cover': cover_url if note_type == '视频' else None,
+            'video_addr': simple_note.get('video_addr') or None,
+            'image_list': [cover_url] if cover_url else [],
+            'tags': simple_note.get('tags') or [],
+            'upload_time': simple_note.get('upload_time') or None,
+            'ip_location': simple_note.get('ip_location') or '',
+            'cover_remote': cover_url,
+            'xsec_token': xsec_token,
+        }
+    
+    @staticmethod
     def _reset_rate_limit_counter() -> None:
         """Reset rate limit counter and adaptive delay manager."""
         with SyncService._rate_limit_lock:
@@ -675,7 +761,8 @@ class SyncService:
                         try:
                             if note_xsec_token:
                                 simple_note['xsec_token'] = note_xsec_token
-                            cleaned_data = handle_note_info(simple_note)
+                            # Use list note converter instead of handle_note_info (which expects detail format)
+                            cleaned_data = SyncService._convert_list_note(simple_note, user_id=account.user_id)
                             
                             if sync_mode == 'deep':
                                 existing_note = existing_notes_cache.get(note_id)
@@ -829,7 +916,8 @@ class SyncService:
                             try:
                                 if note_xsec_token:
                                     simple_note['xsec_token'] = note_xsec_token
-                                cleaned_data = handle_note_info(simple_note)
+                                # Use list note converter instead of handle_note_info (which expects detail format)
+                                cleaned_data = SyncService._convert_list_note(simple_note, user_id=account.user_id)
                                 SyncService._save_note(cleaned_data, download_media=False, auto_commit=False)
                             except Exception as e:
                                 logger.warning(f"Error saving note {note_id} with list data: {e}")
