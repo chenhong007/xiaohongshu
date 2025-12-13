@@ -162,7 +162,6 @@ def show_stats():
     """显示当前封面统计"""
     app = create_app()
     with app.app_context():
-        import sqlite3
         from sqlalchemy import text
         
         total = Note.query.count()
