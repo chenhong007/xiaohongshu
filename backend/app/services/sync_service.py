@@ -80,6 +80,24 @@ class SyncService:
     # Maximum concurrent image downloads per note
     MAX_CONCURRENT_DOWNLOADS = 5
     
+    # Preemptive token refresh interval (refresh token every N notes)
+    TOKEN_REFRESH_INTERVAL = 50
+    
+    @staticmethod
+    def _should_refresh_token(note_index: int) -> bool:
+        """Check if xsec_token should be preemptively refreshed.
+        
+        Preemptively refresh token every TOKEN_REFRESH_INTERVAL notes
+        to prevent token expiration during long sync sessions.
+        
+        Args:
+            note_index: Current note index (0-based)
+            
+        Returns:
+            True if token should be refreshed
+        """
+        return note_index > 0 and note_index % SyncService.TOKEN_REFRESH_INTERVAL == 0
+    
     @staticmethod
     def _update_heartbeat(account_id: int) -> None:
         """Update account sync heartbeat time."""
@@ -1006,6 +1024,19 @@ class SyncService:
                                             )
                                         break
                                 else:
+                                    # 方案1增强：检测"items"字段缺失错误，提供更详细的错误信息
+                                    error_msg = str(msg)
+                                    is_items_error = "'items'" in error_msg or "items" in error_msg.lower() or "缺少'items'" in error_msg
+                                    
+                                    if is_items_error:
+                                        logger.warning(f"Note {note_id} API响应缺少items字段: {msg}")
+                                        # 方案2：尝试使用备用API端点或延迟重试
+                                        if retry_attempt < 2:  # 还有重试机会
+                                            wait_time = random.uniform(5, 10) * (retry_attempt + 1)
+                                            logger.info(f"Note {note_id} items字段缺失，等待{wait_time:.1f}秒后重试 ({retry_attempt + 1}/3)")
+                                            time.sleep(wait_time)
+                                            continue  # 继续重试
+                                    
                                     logger.warning(f"Failed to get note detail for {note_id}: {msg}")
                                     if sync_log:
                                         sync_log.add_issue(
@@ -1013,7 +1044,9 @@ class SyncService:
                                             note_id=note_id,
                                             message=str(msg)
                                         )
-                                    break
+                                    # 如果是items错误且已重试多次，继续尝试fallback
+                                    if not is_items_error or retry_attempt >= 2:
+                                        break
 
                             # Handle successful response (including fallback success)
                             if success and note_info:
@@ -1051,24 +1084,58 @@ class SyncService:
                             total_wait = get_adaptive_delay_manager().get_rate_limit_wait() * 1.5
                             time.sleep(total_wait)
                         
-                        # Fallback to list data
+                        # Fallback to list data - 方案3：智能字段补齐
                         if not detail_saved:
+                            # 方案3增强：尝试从现有笔记数据中保留已有字段
+                            existing_note = existing_notes_cache.get(note_id)
+                            missing_fields = []
+                            
+                            # 检查哪些字段缺失
+                            if not simple_note.get('upload_time') and (not existing_note or not existing_note.upload_time):
+                                missing_fields.append('upload_time')
+                            if simple_note.get('collected_count') is None and (not existing_note or existing_note.collected_count is None):
+                                missing_fields.append('collected_count')
+                            if simple_note.get('comment_count') is None and (not existing_note or existing_note.comment_count is None):
+                                missing_fields.append('comment_count')
+                            if simple_note.get('share_count') is None and (not existing_note or existing_note.share_count is None):
+                                missing_fields.append('share_count')
+                            
                             if sync_log:
                                 sync_log.add_issue(
                                     SyncLogCollector.TYPE_MISSING_FIELD,
                                     note_id=note_id,
-                                    message="Fallback to list data, missing: upload_time, collected_count, etc.",
-                                    fields=['upload_time', 'collected_count', 'comment_count', 'share_count']
+                                    message=f"Fallback to list data, missing: {', '.join(missing_fields) if missing_fields else 'none (using existing data)'}",
+                                    fields=missing_fields if missing_fields else []
                                 )
                             
                             try:
                                 if note_xsec_token:
                                     simple_note['xsec_token'] = note_xsec_token
+                                
+                                # 方案3：如果已有笔记，尝试保留已有字段
+                                if existing_note:
+                                    # 保留已有字段到simple_note中，避免被覆盖
+                                    if existing_note.upload_time:
+                                        simple_note['upload_time'] = existing_note.upload_time
+                                    if existing_note.collected_count is not None:
+                                        simple_note['collected_count'] = existing_note.collected_count
+                                    if existing_note.comment_count is not None:
+                                        simple_note['comment_count'] = existing_note.comment_count
+                                    if existing_note.share_count is not None:
+                                        simple_note['share_count'] = existing_note.share_count
+                                
                                 # Use list note converter instead of handle_note_info (which expects detail format)
                                 cleaned_data = SyncService._convert_list_note(simple_note, user_id=account.user_id)
                                 SyncService._save_note(cleaned_data, download_media=False, auto_commit=False)
+                                logger.debug(f"Note {note_id} saved with list data (fallback)")
                             except Exception as e:
                                 logger.warning(f"Error saving note {note_id} with list data: {e}")
+                                if sync_log:
+                                    sync_log.add_issue(
+                                        SyncLogCollector.TYPE_FETCH_FAILED,
+                                        note_id=note_id,
+                                        message=f"Fallback save error: {str(e)}"
+                                    )
                         
                         SyncService._sleep_with_jitter(sync_mode)
                     
@@ -1117,14 +1184,11 @@ class SyncService:
                         account.sync_logs = json.dumps(logs_data, ensure_ascii=False)
                         
                         summary = logs_data.get('summary', {})
-                        issues_count = sum([
-                            summary.get('rate_limited', 0),
-                            summary.get('missing_field', 0),
-                            summary.get('fetch_failed', 0)
-                        ])
+                        # 使用按笔记去重后的问题数（一个笔记多个问题只计1次）
+                        issues_count = summary.get('unique_problem_notes', 0)
                         if issues_count > 0:
                             account.error_message = (
-                                f"Sync completed with {issues_count} issues: "
+                                f"Sync completed with {issues_count} problem notes: "
                                 f"rate_limited={summary.get('rate_limited', 0)}, "
                                 f"missing={summary.get('missing_field', 0)}, "
                                 f"failed={summary.get('fetch_failed', 0)}"

@@ -48,28 +48,37 @@ const getTimeStats = (logs) => {
 
 const getIssueConfig = (type) => ISSUE_TYPE_CONFIG[type] || { icon: AlertCircle, color: 'text-gray-500', bgColor: 'bg-gray-50', label: type };
 
-const SummaryCards = ({ summary }) => (
-  <div className="grid grid-cols-4 gap-3">
-    <div className="bg-blue-50 rounded-lg p-3 text-center">
-      <div className="text-2xl font-bold text-blue-600">{summary.total || 0}</div>
-      <div className="text-xs text-blue-600">总数</div>
-    </div>
-    <div className="bg-green-50 rounded-lg p-3 text-center">
-      <div className="text-2xl font-bold text-green-600">{summary.success || 0}</div>
-      <div className="text-xs text-green-600">成功</div>
-    </div>
-    <div className="bg-gray-50 rounded-lg p-3 text-center">
-      <div className="text-2xl font-bold text-gray-600">{summary.skipped || 0}</div>
-      <div className="text-xs text-gray-600">跳过</div>
-    </div>
-    <div className="bg-yellow-50 rounded-lg p-3 text-center">
-      <div className="text-2xl font-bold text-yellow-600">
-        {(summary.rate_limited || 0) + (summary.missing_field || 0) + (summary.fetch_failed || 0)}
+const SummaryCards = ({ summary }) => {
+  // 使用按笔记去重后的问题数（一个笔记多个问题只计1次）
+  // 问题数不能大于笔记总数
+  const total = summary.total || 0;
+  const problemCount = summary.unique_problem_notes ?? 
+    Math.min(
+      (summary.rate_limited || 0) + (summary.missing_field || 0) + (summary.fetch_failed || 0),
+      total
+    );
+  
+  return (
+    <div className="grid grid-cols-4 gap-3">
+      <div className="bg-blue-50 rounded-lg p-3 text-center">
+        <div className="text-2xl font-bold text-blue-600">{total}</div>
+        <div className="text-xs text-blue-600">总数</div>
       </div>
-      <div className="text-xs text-yellow-600">问题</div>
+      <div className="bg-green-50 rounded-lg p-3 text-center">
+        <div className="text-2xl font-bold text-green-600">{summary.success || 0}</div>
+        <div className="text-xs text-green-600">成功</div>
+      </div>
+      <div className="bg-gray-50 rounded-lg p-3 text-center">
+        <div className="text-2xl font-bold text-gray-600">{summary.skipped || 0}</div>
+        <div className="text-xs text-gray-600">跳过</div>
+      </div>
+      <div className="bg-yellow-50 rounded-lg p-3 text-center">
+        <div className="text-2xl font-bold text-yellow-600">{problemCount}</div>
+        <div className="text-xs text-yellow-600">问题</div>
+      </div>
     </div>
-  </div>
-);
+  );
+};
 
 const IssueItem = ({ issue }) => {
   const config = getIssueConfig(issue.type);
