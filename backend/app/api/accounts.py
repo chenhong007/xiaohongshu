@@ -190,6 +190,11 @@ def sync_account(account_id):
     Request Body:
         - mode: 同步模式 ('fast' | 'deep')
     """
+    # Check Cookie validity before starting sync
+    cookie_valid, cookie_error = SyncService.check_cookie_valid()
+    if not cookie_valid:
+        return ApiResponse.error(cookie_error, 401, 'INVALID_COOKIE')
+    
     account = Account.query.get(account_id)
     if not account:
         return ApiResponse.not_found('账号不存在')
@@ -214,6 +219,11 @@ def sync_batch():
         - ids: 账号ID数组
         - mode: 同步模式 ('fast' | 'deep')
     """
+    # Check Cookie validity before starting sync
+    cookie_valid, cookie_error = SyncService.check_cookie_valid()
+    if not cookie_valid:
+        return ApiResponse.error(cookie_error, 401, 'INVALID_COOKIE')
+    
     data = request.json or {}
     
     # 验证 ID 列表
@@ -254,6 +264,11 @@ def sync_all():
     Request Body:
         - mode: 同步模式 ('fast' | 'deep')
     """
+    # Check Cookie validity before starting sync
+    cookie_valid, cookie_error = SyncService.check_cookie_valid()
+    if not cookie_valid:
+        return ApiResponse.error(cookie_error, 401, 'INVALID_COOKIE')
+    
     data = request.json or {}
     
     is_valid, error_msg, mode = validate_sync_mode(data.get('mode'))
@@ -370,6 +385,11 @@ def fix_missing_fields(account_id):
     Request Body:
         - force: 是否强制重新采集所有笔记 (默认 false，只采集缺失字段的笔记)
     """
+    # Check Cookie validity before starting sync
+    cookie_valid, cookie_error = SyncService.check_cookie_valid()
+    if not cookie_valid:
+        return ApiResponse.error(cookie_error, 401, 'INVALID_COOKIE')
+    
     from ..models import Note
     
     account = Account.query.get(account_id)

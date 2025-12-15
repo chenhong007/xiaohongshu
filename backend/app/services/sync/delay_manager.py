@@ -152,8 +152,18 @@ def get_adaptive_delay_manager() -> AdaptiveDelayManager:
     
     Returns:
         The global AdaptiveDelayManager instance
+        
+    Note:
+        Uses conservative settings to reduce rate limiting:
+        - min_delay=8s: Minimum 8 seconds between requests
+        - initial_delay=15s: Start with 15 second delay for deep sync
+        - max_delay=180s: Cap at 3 minutes to avoid excessively long waits
     """
     global _adaptive_delay_manager
     if _adaptive_delay_manager is None:
-        _adaptive_delay_manager = AdaptiveDelayManager()
+        _adaptive_delay_manager = AdaptiveDelayManager(
+            min_delay=8.0,        # Increase minimum to reduce rate limit risk
+            max_delay=180.0,      # Reduce max to avoid too long waits
+            initial_delay=15.0,   # Start conservatively
+        )
     return _adaptive_delay_manager

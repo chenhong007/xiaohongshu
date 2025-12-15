@@ -106,18 +106,28 @@ class Account(db.Model):
             issue_type: 可选，筛选特定类型的问题
         
         Returns:
-            dict: {issues: [], total: int, page: int, page_size: int, total_pages: int}
+            dict: {issues: [], total: int, unique_total: int, page: int, page_size: int, total_pages: int}
         """
         if not self.sync_logs:
-            return {'issues': [], 'total': 0, 'page': page, 'page_size': page_size, 'total_pages': 0}
+            return {'issues': [], 'total': 0, 'unique_total': 0, 'page': page, 'page_size': page_size, 'total_pages': 0}
         
         try:
             full_logs = json.loads(self.sync_logs)
             all_issues = full_logs.get('issues', [])
+            summary = full_logs.get('summary', {})
+            
+            # Get unique problem notes count from summary (deduplicated by note_id)
+            unique_total = summary.get('unique_problem_notes', 0)
             
             # Filter by type if specified
             if issue_type:
                 all_issues = [i for i in all_issues if i.get('type') == issue_type]
+                # Recalculate unique_total for filtered type
+                unique_note_ids = set()
+                for issue in all_issues:
+                    if issue.get('note_id'):
+                        unique_note_ids.add(issue.get('note_id'))
+                unique_total = len(unique_note_ids)
             
             total = len(all_issues)
             total_pages = (total + page_size - 1) // page_size if page_size > 0 else 0
@@ -130,12 +140,13 @@ class Account(db.Model):
             return {
                 'issues': paginated_issues,
                 'total': total,
+                'unique_total': unique_total,
                 'page': page,
                 'page_size': page_size,
                 'total_pages': total_pages,
             }
         except (json.JSONDecodeError, TypeError):
-            return {'issues': [], 'total': 0, 'page': page, 'page_size': page_size, 'total_pages': 0}
+            return {'issues': [], 'total': 0, 'unique_total': 0, 'page': page, 'page_size': page_size, 'total_pages': 0}
     
     def __repr__(self):
         return f'<Account {self.name}>'

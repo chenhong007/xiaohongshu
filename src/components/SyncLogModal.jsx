@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   X, 
   Clock, 
@@ -10,7 +10,8 @@ import {
   CheckCircle,
   ChevronDown,
   ChevronUp,
-  FileText
+  FileText,
+  Loader2
 } from 'lucide-react';
 
 const ISSUE_TYPE_CONFIG = {
@@ -97,6 +98,36 @@ const IssueItem = ({ issue }) => {
 
 export const SyncLogModal = ({ isOpen, onClose, account }) => {
   const [expandedIssues, setExpandedIssues] = useState(false);
+  const [issues, setIssues] = useState([]);
+  const [issuesLoading, setIssuesLoading] = useState(false);
+  const [totalIssues, setTotalIssues] = useState(0);
+  
+  // Fetch issues from API when modal opens
+  useEffect(() => {
+    if (!isOpen || !account?.id) return;
+    
+    const fetchIssues = async () => {
+      setIssuesLoading(true);
+      try {
+        const apiBase = import.meta.env.VITE_API_BASE_URL || '';
+        const response = await fetch(`${apiBase}/api/accounts/${account.id}/sync-logs?page=1&page_size=200`);
+        if (response.ok) {
+          const data = await response.json();
+          if (data.success && data.data) {
+            setIssues(data.data.issues || []);
+            // Use unique_total (deduplicated by note_id) for display
+            setTotalIssues(data.data.unique_total ?? data.data.total ?? 0);
+          }
+        }
+      } catch (error) {
+        console.error('Failed to fetch sync log issues:', error);
+      } finally {
+        setIssuesLoading(false);
+      }
+    };
+    
+    fetchIssues();
+  }, [isOpen, account?.id]);
   
   if (!isOpen || !account) return null;
   const logs = account.sync_logs;
@@ -116,7 +147,6 @@ export const SyncLogModal = ({ isOpen, onClose, account }) => {
   }
   
   const summary = logs.summary || {};
-  const issues = logs.issues || [];
   const timeStats = getTimeStats(logs);
   const displayIssues = expandedIssues ? issues : issues.slice(0, 10);
   
@@ -152,14 +182,19 @@ export const SyncLogModal = ({ isOpen, onClose, account }) => {
         
         <div className="flex-1 overflow-y-auto p-4">
           <div className="flex justify-between items-center mb-3">
-            <h4 className="text-sm font-medium text-gray-700">问题列表 ({issues.length})</h4>
+            <h4 className="text-sm font-medium text-gray-700">问题列表 ({totalIssues})</h4>
             {issues.length > 5 && (
               <button onClick={() => setExpandedIssues(!expandedIssues)} className="text-xs text-blue-500 hover:text-blue-700 flex items-center gap-1">
                 {expandedIssues ? <><ChevronUp className="w-3 h-3" /> 收起</> : <><ChevronDown className="w-3 h-3" /> 展开</>}
               </button>
             )}
           </div>
-          {issues.length === 0 ? (
+          {issuesLoading ? (
+            <div className="text-center py-8 text-gray-400">
+              <Loader2 className="w-8 h-8 mx-auto mb-2 animate-spin text-blue-400" />
+              <p>加载问题列表...</p>
+            </div>
+          ) : totalIssues === 0 ? (
             <div className="text-center py-8 text-gray-400">
               <CheckCircle className="w-12 h-12 mx-auto mb-2 text-green-400" />
               <p>无问题</p>
@@ -172,6 +207,11 @@ export const SyncLogModal = ({ isOpen, onClose, account }) => {
                   <button onClick={() => setExpandedIssues(true)} className="text-sm text-blue-500 hover:text-blue-700">
                     还有 {issues.length - 10} 条...
                   </button>
+                </div>
+              )}
+              {totalIssues > issues.length && (
+                <div className="text-center py-2 text-xs text-gray-400">
+                  仅显示前 {issues.length} 条，共 {totalIssues} 条问题
                 </div>
               )}
             </div>

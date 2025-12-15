@@ -65,13 +65,23 @@ class SyncLogCollector:
         self.summary = {
             'total': 0,           # Total notes
             'success': 0,         # Successfully processed
-            'rate_limited': 0,    # Rate limit count
+            'rate_limited': 0,    # Rate limit count (unique notes)
             'unavailable': 0,     # Unavailable notes
             'missing_field': 0,   # Missing fields (fallback)
             'fetch_failed': 0,    # Fetch failures
             'token_refresh': 0,   # Token refresh count
             'media_failed': 0,    # Media download failures
             'skipped': 0,         # Skipped (already complete)
+        }
+        # Track which notes have been counted for each issue type (avoid duplicate counting)
+        self._counted_notes: Dict[str, set] = {
+            self.TYPE_RATE_LIMITED: set(),
+            self.TYPE_UNAVAILABLE: set(),
+            self.TYPE_MISSING_FIELD: set(),
+            self.TYPE_FETCH_FAILED: set(),
+            self.TYPE_TOKEN_REFRESH: set(),
+            self.TYPE_MEDIA_FAILED: set(),
+            self.TYPE_AUTH_ERROR: set(),
         }
         self._lock = threading.Lock()
     
@@ -91,6 +101,10 @@ class SyncLogCollector:
             message: Error message (truncated to MAX_MESSAGE_LENGTH)
             fields: List of missing field names
             extra: Additional context data
+            
+        Note:
+            Summary counts are deduplicated per note_id to avoid inflated numbers
+            from retries. The issues list still records all events for debugging.
         """
         with self._lock:
             issue = {
@@ -110,19 +124,28 @@ class SyncLogCollector:
             if len(self.issues) < self.MAX_ISSUES:
                 self.issues.append(issue)
             
-            # Update summary counts
-            if issue_type == self.TYPE_RATE_LIMITED:
-                self.summary['rate_limited'] += 1
-            elif issue_type == self.TYPE_UNAVAILABLE:
-                self.summary['unavailable'] += 1
-            elif issue_type == self.TYPE_MISSING_FIELD:
-                self.summary['missing_field'] += 1
-            elif issue_type == self.TYPE_FETCH_FAILED:
-                self.summary['fetch_failed'] += 1
-            elif issue_type == self.TYPE_TOKEN_REFRESH:
-                self.summary['token_refresh'] += 1
-            elif issue_type == self.TYPE_MEDIA_FAILED:
-                self.summary['media_failed'] += 1
+            # Update summary counts - deduplicate by note_id
+            # Only count each note once per issue type
+            should_count = True
+            if note_id and issue_type in self._counted_notes:
+                if note_id in self._counted_notes[issue_type]:
+                    should_count = False  # Already counted this note for this type
+                else:
+                    self._counted_notes[issue_type].add(note_id)
+            
+            if should_count:
+                if issue_type == self.TYPE_RATE_LIMITED:
+                    self.summary['rate_limited'] += 1
+                elif issue_type == self.TYPE_UNAVAILABLE:
+                    self.summary['unavailable'] += 1
+                elif issue_type == self.TYPE_MISSING_FIELD:
+                    self.summary['missing_field'] += 1
+                elif issue_type == self.TYPE_FETCH_FAILED:
+                    self.summary['fetch_failed'] += 1
+                elif issue_type == self.TYPE_TOKEN_REFRESH:
+                    self.summary['token_refresh'] += 1
+                elif issue_type == self.TYPE_MEDIA_FAILED:
+                    self.summary['media_failed'] += 1
     
     def record_success(self) -> None:
         """Record a successfully processed note."""
@@ -151,11 +174,22 @@ class SyncLogCollector:
         """
         with self._lock:
             self.end_time = datetime.utcnow().isoformat() + 'Z'
+            
+            # Calculate unique problem note count (deduplicated by note_id)
+            unique_problem_notes = set()
+            for issue_type, note_ids in self._counted_notes.items():
+                # Only count problem types (exclude token_refresh which is normal event)
+                if issue_type != self.TYPE_TOKEN_REFRESH:
+                    unique_problem_notes.update(note_ids)
+            
+            summary = self.summary.copy()
+            summary['unique_problem_notes'] = len(unique_problem_notes)
+            
             return {
                 'sync_mode': self.sync_mode,
                 'start_time': self.start_time,
                 'end_time': self.end_time,
-                'summary': self.summary.copy(),
+                'summary': summary,
                 'issues': self.issues.copy(),
             }
     

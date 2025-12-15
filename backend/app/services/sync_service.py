@@ -534,6 +534,20 @@ class SyncService:
         time.sleep(delay)
 
     @staticmethod
+    def check_cookie_valid() -> Tuple[bool, str]:
+        """Check if current Cookie is valid.
+        
+        Returns:
+            Tuple of (is_valid, error_message)
+        """
+        cookie = Cookie.query.filter_by(is_active=True).first()
+        if not cookie:
+            return False, 'No Cookie configured, please login first'
+        if not cookie.is_valid:
+            return False, 'Cookie has expired, please re-login to update Cookie'
+        return True, ''
+    
+    @staticmethod
     def get_cookie_str() -> str:
         """Get valid decrypted Cookie string."""
         cookie = Cookie.query.filter_by(is_active=True, is_valid=True).first()
@@ -914,14 +928,83 @@ class SyncService:
                                     db.session.commit()
                                     SyncService._mark_accounts_failed(remaining_ids, auth_error_msg)
                                     break
-                                elif SyncService._is_xsec_token_error(msg):
-                                    if sync_log:
-                                        sync_log.add_issue(
-                                            SyncLogCollector.TYPE_TOKEN_REFRESH,
-                                            note_id=note_id,
-                                            message=f"xsec_token invalid: {msg}"
-                                        )
-                                    break
+                                elif SyncService._is_xsec_token_error(msg) or '暂时无法浏览' in str(msg):
+                                    # Try with user-level xsec_token as fallback
+                                    if xsec_token and retry_attempt == 0:
+                                        fallback_url = f"https://www.xiaohongshu.com/explore/{note_id}?xsec_token={xsec_token}&xsec_source=pc_search"
+                                        success_fallback, msg_fallback, note_info_fallback = data_spider.spider_note(fallback_url, cookie_str)
+                                        if success_fallback and note_info_fallback:
+                                            note_info = note_info_fallback
+                                            success = True
+                                            logger.debug(f"Note {note_id} recovered with user xsec_token")
+                                            # Fall through to success handling below
+                                        else:
+                                            # Fallback 1 failed, try to refresh user xsec_token from user homepage
+                                            logger.debug(f"Note {note_id} fallback with cached xsec_token failed, trying to refresh...")
+                                            refreshed_token = SyncService._fetch_user_xsec_token(account.user_id, xhs_apis, cookie_str)
+                                            if refreshed_token and refreshed_token != xsec_token:
+                                                # Update cached user xsec_token for subsequent notes
+                                                xsec_token = refreshed_token
+                                                retry_url = f"https://www.xiaohongshu.com/explore/{note_id}?xsec_token={refreshed_token}&xsec_source=pc_search"
+                                                success_retry, msg_retry, note_info_retry = data_spider.spider_note(retry_url, cookie_str)
+                                                if success_retry and note_info_retry:
+                                                    note_info = note_info_retry
+                                                    success = True
+                                                    logger.info(f"Note {note_id} recovered with refreshed xsec_token")
+                                                    # Fall through to success handling below
+                                                else:
+                                                    if sync_log:
+                                                        sync_log.add_issue(
+                                                            SyncLogCollector.TYPE_TOKEN_REFRESH,
+                                                            note_id=note_id,
+                                                            message=f"xsec_token invalid, refresh retry also failed: {msg_retry}"
+                                                        )
+                                                    break
+                                            else:
+                                                if sync_log:
+                                                    sync_log.add_issue(
+                                                        SyncLogCollector.TYPE_TOKEN_REFRESH,
+                                                        note_id=note_id,
+                                                        message=f"xsec_token invalid, failed to refresh token: {msg}"
+                                                    )
+                                                break
+                                    elif retry_attempt == 0:
+                                        # No cached xsec_token, try to fetch one from user homepage
+                                        logger.debug(f"Note {note_id} no cached xsec_token, trying to fetch...")
+                                        fetched_token = SyncService._fetch_user_xsec_token(account.user_id, xhs_apis, cookie_str)
+                                        if fetched_token:
+                                            xsec_token = fetched_token
+                                            retry_url = f"https://www.xiaohongshu.com/explore/{note_id}?xsec_token={fetched_token}&xsec_source=pc_search"
+                                            success_retry, msg_retry, note_info_retry = data_spider.spider_note(retry_url, cookie_str)
+                                            if success_retry and note_info_retry:
+                                                note_info = note_info_retry
+                                                success = True
+                                                logger.info(f"Note {note_id} recovered with newly fetched xsec_token")
+                                                # Fall through to success handling below
+                                            else:
+                                                if sync_log:
+                                                    sync_log.add_issue(
+                                                        SyncLogCollector.TYPE_TOKEN_REFRESH,
+                                                        note_id=note_id,
+                                                        message=f"xsec_token invalid, fetched token also failed: {msg_retry}"
+                                                    )
+                                                break
+                                        else:
+                                            if sync_log:
+                                                sync_log.add_issue(
+                                                    SyncLogCollector.TYPE_TOKEN_REFRESH,
+                                                    note_id=note_id,
+                                                    message=f"xsec_token invalid, failed to fetch token: {msg}"
+                                                )
+                                            break
+                                    else:
+                                        if sync_log:
+                                            sync_log.add_issue(
+                                                SyncLogCollector.TYPE_TOKEN_REFRESH,
+                                                note_id=note_id,
+                                                message=f"xsec_token invalid: {msg}"
+                                            )
+                                        break
                                 else:
                                     logger.warning(f"Failed to get note detail for {note_id}: {msg}")
                                     if sync_log:
@@ -932,6 +1015,7 @@ class SyncService:
                                         )
                                     break
 
+                            # Handle successful response (including fallback success)
                             if success and note_info:
                                 try:
                                     note_info['xsec_token'] = note_xsec_token
