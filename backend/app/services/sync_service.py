@@ -863,11 +863,17 @@ class SyncService:
                             if sync_mode == 'deep':
                                 existing_note = existing_notes_cache.get(note_id)
                                 if existing_note:
+                                    # 已存在的笔记，只更新点赞数
                                     if cleaned_data['liked_count'] is not None:
                                         existing_note.liked_count = cleaned_data['liked_count']
                                     existing_note.last_updated = datetime.utcnow()
                                     if sync_log:
                                         sync_log.record_skipped()
+                                else:
+                                    # 修复：新笔记需要保存并记录为成功
+                                    SyncService._save_note(cleaned_data, download_media=False, auto_commit=False)
+                                    if sync_log:
+                                        sync_log.record_success()
                             else:
                                 fast_sync_batch.append(cleaned_data)
                                 
@@ -1128,6 +1134,9 @@ class SyncService:
                                 cleaned_data = SyncService._convert_list_note(simple_note, user_id=account.user_id)
                                 SyncService._save_note(cleaned_data, download_media=False, auto_commit=False)
                                 logger.debug(f"Note {note_id} saved with list data (fallback)")
+                                # 修复：记录成功（虽然是fallback，但笔记已保存）
+                                if sync_log:
+                                    sync_log.record_success()
                             except Exception as e:
                                 logger.warning(f"Error saving note {note_id} with list data: {e}")
                                 if sync_log:

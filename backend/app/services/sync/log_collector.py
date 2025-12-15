@@ -185,6 +185,22 @@ class SyncLogCollector:
             summary = self.summary.copy()
             summary['unique_problem_notes'] = len(unique_problem_notes)
             
+            # 验证统计数据一致性：total 应该等于 success + skipped + unique_problem_notes
+            total = summary.get('total', 0)
+            success = summary.get('success', 0)
+            skipped = summary.get('skipped', 0)
+            problems = len(unique_problem_notes)
+            calculated_total = success + skipped + problems
+            
+            if total != calculated_total:
+                from ...utils.logger import get_logger
+                logger = get_logger('log_collector')
+                logger.warning(
+                    f"Statistics mismatch detected! "
+                    f"total={total}, but success({success}) + skipped({skipped}) + problems({problems}) = {calculated_total}. "
+                    f"Difference: {total - calculated_total}"
+                )
+            
             return {
                 'sync_mode': self.sync_mode,
                 'start_time': self.start_time,

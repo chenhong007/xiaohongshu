@@ -33,9 +33,8 @@ const getTimeStats = (logs) => {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   const summary = logs.summary || {};
-  const processedCount = (summary.success || 0) + (summary.skipped || 0) + 
-                         (summary.missing_field || 0) + (summary.fetch_failed || 0) +
-                         (summary.unavailable || 0);
+  // 修复：只计算实际处理的笔记数（成功+跳过），问题类型不应该包含在内
+  const processedCount = (summary.success || 0) + (summary.skipped || 0);
   const avgMs = processedCount > 0 ? totalMs / processedCount : 0;
   const avgSeconds = avgMs / 1000;
   return {
@@ -54,7 +53,7 @@ const SummaryCards = ({ summary }) => {
   const total = summary.total || 0;
   const problemCount = summary.unique_problem_notes ?? 
     Math.min(
-      (summary.rate_limited || 0) + (summary.missing_field || 0) + (summary.fetch_failed || 0),
+      (summary.rate_limited || 0) + (summary.missing_field || 0) + (summary.fetch_failed || 0) + (summary.unavailable || 0),
       total
     );
   
