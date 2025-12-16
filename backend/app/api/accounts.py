@@ -204,7 +204,11 @@ def sync_account(account_id):
     if not is_valid:
         return ApiResponse.validation_error(error_msg)
     
-    SyncService.start_sync([account_id], sync_mode=mode)
+    # 尝试启动同步（会检查是否已有同步任务在运行）
+    success, message = SyncService.start_sync([account_id], sync_mode=mode)
+    if not success:
+        return ApiResponse.error(message, 409, 'SYNC_IN_PROGRESS')
+    
     logger.info(f"开始同步账号 {account.user_id}，模式: {mode}")
     
     return success_response(message=f'开始同步，模式: {mode}')
@@ -240,6 +244,10 @@ def sync_batch():
     if not is_valid:
         return ApiResponse.validation_error(error_msg)
     
+    # 先检查是否有同步任务在运行，避免无谓的状态更新
+    if SyncService.is_sync_running():
+        return ApiResponse.error('已有同步任务正在运行，请等待当前任务完成或停止后再试', 409, 'SYNC_IN_PROGRESS')
+    
     # 重置状态
     Account.query.filter(Account.id.in_(ids)).update(
         {'status': 'pending', 'progress': 0, 'error_message': None},
@@ -247,7 +255,17 @@ def sync_batch():
     )
     db.session.commit()
     
-    SyncService.start_sync(ids, sync_mode=mode)
+    # 尝试启动同步
+    success, message = SyncService.start_sync(ids, sync_mode=mode)
+    if not success:
+        # 回滚状态（理论上不应该发生，因为上面已经检查过）
+        Account.query.filter(Account.id.in_(ids)).update(
+            {'status': 'failed', 'error_message': message},
+            synchronize_session=False
+        )
+        db.session.commit()
+        return ApiResponse.error(message, 409, 'SYNC_IN_PROGRESS')
+    
     logger.info(f"开始批量同步 {len(ids)} 个账号，模式: {mode}，IDs: {ids}")
     
     return success_response(
@@ -281,6 +299,10 @@ def sync_all():
     if not ids:
         return ApiResponse.error('没有可同步的账号', 400, 'NO_ACCOUNTS')
     
+    # 先检查是否有同步任务在运行，避免无谓的状态更新
+    if SyncService.is_sync_running():
+        return ApiResponse.error('已有同步任务正在运行，请等待当前任务完成或停止后再试', 409, 'SYNC_IN_PROGRESS')
+    
     Account.query.update({
         'status': 'pending',
         'progress': 0,
@@ -288,7 +310,17 @@ def sync_all():
     })
     db.session.commit()
     
-    SyncService.start_sync(ids, sync_mode=mode)
+    # 尝试启动同步
+    success, message = SyncService.start_sync(ids, sync_mode=mode)
+    if not success:
+        # 回滚状态
+        Account.query.update({
+            'status': 'failed',
+            'error_message': message
+        })
+        db.session.commit()
+        return ApiResponse.error(message, 409, 'SYNC_IN_PROGRESS')
+    
     logger.info(f"开始同步所有账号 ({len(ids)} 个)，模式: {mode}")
     
     return success_response(
@@ -437,7 +469,10 @@ def fix_missing_fields(account_id):
             )
         
         # 启动深度同步（会自动检测并补齐缺失字段）
-        SyncService.start_sync([account_id], sync_mode='deep')
+        success, message = SyncService.start_sync([account_id], sync_mode='deep')
+        if not success:
+            return ApiResponse.error(message, 409, 'SYNC_IN_PROGRESS')
+        
         logger.info(f"开始补齐账号 {account.user_id} 的缺失字段，共 {missing_count} 条笔记需要处理")
         
         return success_response(

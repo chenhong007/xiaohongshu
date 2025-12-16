@@ -77,12 +77,18 @@ class SyncService:
     - Adaptive rate limiting with exponential backoff
     - Async media downloading
     - Comprehensive error handling and logging
+    - Sync lock to prevent concurrent sync tasks (accounts sync serially)
     """
     
     _stop_event = threading.Event()
     _current_sync_mode: str = 'fast'
     _rate_limit_counter: int = 0
     _rate_limit_lock = threading.Lock()
+    
+    # 同步锁：防止多个同步任务同时运行
+    _sync_lock = threading.Lock()
+    _sync_running = False
+    _sync_thread: Optional[threading.Thread] = None
     
     # Heartbeat timeout (seconds) - tasks without heartbeat are considered stale
     HEARTBEAT_TIMEOUT = 300  # 5 minutes
@@ -249,6 +255,36 @@ class SyncService:
         except Exception as e:
             logger.error(f"Failed to mark accounts {account_ids} as failed: {e}")
             db.session.rollback()
+    
+    @staticmethod
+    def _fail_single_account(account: 'Account', message: str, extra_fields: Optional[Dict[str, Any]] = None, commit: bool = True) -> None:
+        """标记单个账号为失败状态.
+        
+        Args:
+            account: Account对象
+            message: 错误消息
+            extra_fields: 额外要更新的字段
+            commit: 是否立即提交事务
+        """
+        if not account:
+            return
+        
+        try:
+            account.status = SyncStateManager.STATUS_FAILED
+            account.error_message = message
+            account.sync_heartbeat = None
+            
+            if extra_fields:
+                for key, value in extra_fields.items():
+                    if hasattr(account, key):
+                        setattr(account, key, value)
+            
+            if commit:
+                db.session.commit()
+        except Exception as e:
+            logger.error(f"Failed to mark account {account.id} as failed: {e}")
+            if commit:
+                db.session.rollback()
     
     @staticmethod
     def stop_sync() -> None:
@@ -495,14 +531,53 @@ class SyncService:
         return CookieService.get_cookie_str()
     
     @staticmethod
-    def start_sync(account_ids: List[int], sync_mode: str = 'fast') -> None:
+    def is_sync_running() -> bool:
+        """检查是否有同步任务正在运行.
+        
+        Returns:
+            True if sync is running, False otherwise
+        """
+        with SyncService._sync_lock:
+            # 检查线程是否存活
+            if SyncService._sync_running and SyncService._sync_thread:
+                if SyncService._sync_thread.is_alive():
+                    return True
+                else:
+                    # 线程已结束，重置状态
+                    SyncService._sync_running = False
+                    SyncService._sync_thread = None
+            return False
+    
+    @staticmethod
+    def start_sync(account_ids: List[int], sync_mode: str = 'fast') -> Tuple[bool, str]:
         """Start background sync task.
+        
+        账号同步是串行的，同一时间只能有一个同步任务运行。
+        如果已有同步任务在运行，会返回失败。
         
         Args:
             account_ids: List of account IDs to sync
             sync_mode: 'fast' for quick sync, 'deep' for full sync
+            
+        Returns:
+            Tuple of (success, message)
         """
         from .. import create_app
+        
+        # 检查是否已有同步任务在运行
+        with SyncService._sync_lock:
+            if SyncService._sync_running and SyncService._sync_thread:
+                if SyncService._sync_thread.is_alive():
+                    logger.warning(f"Sync task already running, rejecting new request for {len(account_ids)} accounts")
+                    return False, "已有同步任务正在运行，请等待当前任务完成或停止后再试"
+                else:
+                    # 线程已结束，重置状态
+                    SyncService._sync_running = False
+                    SyncService._sync_thread = None
+            
+            # 标记同步开始
+            SyncService._sync_running = True
+        
         app = create_app()
         
         SyncService._stop_event.clear()
@@ -513,36 +588,49 @@ class SyncService:
             args=(app, account_ids, sync_mode)
         )
         thread.daemon = True
+        
+        # 保存线程引用
+        with SyncService._sync_lock:
+            SyncService._sync_thread = thread
+        
         thread.start()
         
         logger.info(f"Sync task started: {len(account_ids)} accounts, mode: {sync_mode}")
+        return True, f"开始同步 {len(account_ids)} 个账号"
     
     @staticmethod
     def _run_sync(app, account_ids: List[int], sync_mode: str) -> None:
         """Execute sync in background thread with top-level error handling."""
-        with app.app_context():
-            try:
-                SyncService._sync_accounts(account_ids, sync_mode)
-            except Exception as e:
-                logger.error(f"[FatalError] Sync thread crashed: {e}")
+        try:
+            with app.app_context():
                 try:
-                    error_msg = f"Sync thread crashed: {str(e)[:200]}"
-                    affected = Account.query.filter(
-                        Account.id.in_(account_ids),
-                        Account.status == 'processing'
-                    ).update(
-                        {
-                            'status': 'failed',
-                            'error_message': error_msg,
-                            'sync_heartbeat': None
-                        },
-                        synchronize_session=False
-                    )
-                    db.session.commit()
-                    logger.info(f"[FatalErrorRecovery] Marked {affected} accounts as failed")
-                except Exception as inner_e:
-                    logger.error(f"[FatalErrorRecovery] Failed to update account status: {inner_e}")
-                    db.session.rollback()
+                    SyncService._sync_accounts(account_ids, sync_mode)
+                except Exception as e:
+                    logger.error(f"[FatalError] Sync thread crashed: {e}")
+                    try:
+                        error_msg = f"Sync thread crashed: {str(e)[:200]}"
+                        affected = Account.query.filter(
+                            Account.id.in_(account_ids),
+                            Account.status == 'processing'
+                        ).update(
+                            {
+                                'status': 'failed',
+                                'error_message': error_msg,
+                                'sync_heartbeat': None
+                            },
+                            synchronize_session=False
+                        )
+                        db.session.commit()
+                        logger.info(f"[FatalErrorRecovery] Marked {affected} accounts as failed")
+                    except Exception as inner_e:
+                        logger.error(f"[FatalErrorRecovery] Failed to update account status: {inner_e}")
+                        db.session.rollback()
+        finally:
+            # 无论成功还是失败，都要重置同步状态
+            with SyncService._sync_lock:
+                SyncService._sync_running = False
+                SyncService._sync_thread = None
+            logger.info(f"[SyncComplete] Sync task finished, lock released")
     
     @staticmethod
     def _sync_accounts(account_ids: List[int], sync_mode: str) -> None:

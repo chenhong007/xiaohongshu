@@ -197,6 +197,55 @@ class NoteValidator:
         return missing
     
     @staticmethod
+    def get_missing_basic_fields(note: 'Note') -> List[str]:
+        """Get list of missing basic fields.
+        
+        Basic fields are those that should always be present from list API.
+        
+        Args:
+            note: Note object to check
+            
+        Returns:
+            List of missing basic field names
+        """
+        if not note:
+            return NoteValidator.BASIC_FIELDS.copy()
+        
+        missing = []
+        
+        def is_blank(value):
+            return value is None or (isinstance(value, str) and value.strip() == '')
+        
+        for field in NoteValidator.BASIC_FIELDS:
+            if is_blank(getattr(note, field, None)):
+                missing.append(field)
+        
+        return missing
+    
+    @staticmethod
+    def get_missing_interaction_fields(note: 'Note') -> List[str]:
+        """Get list of missing interaction fields.
+        
+        Interaction fields may be missing from list API responses.
+        
+        Args:
+            note: Note object to check
+            
+        Returns:
+            List of missing interaction field names
+        """
+        if not note:
+            return NoteValidator.INTERACTION_FIELDS.copy()
+        
+        missing = []
+        
+        for field in NoteValidator.INTERACTION_FIELDS:
+            if getattr(note, field, None) is None:
+                missing.append(field)
+        
+        return missing
+    
+    @staticmethod
     def get_missing_media_fields(note: 'Note') -> List[str]:
         """Get list of missing media fields.
         
