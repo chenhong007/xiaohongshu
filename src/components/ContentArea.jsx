@@ -309,7 +309,7 @@ export const ContentArea = ({
     }
   }, [fetchAccounts, setError]);
 
-  // Import
+  // Import - 支持完整数据导入（账号+笔记）
   const handleImport = useCallback(() => {
     const input = document.createElement('input');
     input.type = 'file';
@@ -320,32 +320,66 @@ export const ContentArea = ({
       
       try {
         const text = await file.text();
-        let userIds = [];
         
         if (file.name.endsWith('.json')) {
           const data = JSON.parse(text);
-          userIds = Array.isArray(data) ? data.map(item => item.user_id || item.id || item) : [];
-        } else {
-          userIds = text.split('\n').map(line => line.trim()).filter(Boolean);
-        }
-        
-        if (userIds.length === 0) {
-          alert('未找到有效的用户ID');
-          return;
-        }
-        
-        let added = 0;
-        for (const userId of userIds) {
-          try {
-            await accountApi.add({ user_id: userId });
-            added++;
-          } catch (err) {
-            if (err.status !== 409) console.error(`Failed to add ${userId}:`, err);
+          
+          // 检查是否是完整导出格式（包含 accounts 和 notes）
+          if (data.accounts && Array.isArray(data.accounts)) {
+            // 完整格式导入（包含账号和笔记）
+            const result = await accountApi.import(data);
+            const msg = [
+              `账号: 新增 ${result.accounts_added}, 更新 ${result.accounts_updated}`,
+              `笔记: 新增 ${result.notes_added}, 更新 ${result.notes_updated}`
+            ].join('\n');
+            alert(`导入成功！\n${msg}`);
+            fetchAccounts();
+            return;
           }
+          
+          // 兼容旧格式：纯账号数组
+          const userIds = Array.isArray(data) 
+            ? data.map(item => item.user_id || item.id || item).filter(Boolean)
+            : [];
+          
+          if (userIds.length === 0) {
+            alert('未找到有效的用户ID');
+            return;
+          }
+          
+          // 旧格式：逐个添加账号
+          let added = 0;
+          for (const userId of userIds) {
+            try {
+              await accountApi.add({ user_id: userId });
+              added++;
+            } catch (err) {
+              if (err.status !== 409) console.error(`Failed to add ${userId}:`, err);
+            }
+          }
+          alert(`成功导入 ${added} 个账号`);
+          fetchAccounts();
+        } else {
+          // CSV/TXT 格式：每行一个用户ID
+          const userIds = text.split('\n').map(line => line.trim()).filter(Boolean);
+          
+          if (userIds.length === 0) {
+            alert('未找到有效的用户ID');
+            return;
+          }
+          
+          let added = 0;
+          for (const userId of userIds) {
+            try {
+              await accountApi.add({ user_id: userId });
+              added++;
+            } catch (err) {
+              if (err.status !== 409) console.error(`Failed to add ${userId}:`, err);
+            }
+          }
+          alert(`成功导入 ${added} 个账号`);
+          fetchAccounts();
         }
-        
-        alert(`成功导入 ${added} 个账号`);
-        fetchAccounts();
       } catch (err) {
         alert('导入失败: ' + err.message);
       }
@@ -353,25 +387,35 @@ export const ContentArea = ({
     input.click();
   }, [fetchAccounts]);
 
-  // Export
-  const handleExport = useCallback(() => {
-    const exportData = selectedIds.size > 0 
-      ? accounts.filter(acc => selectedIds.has(acc.id))
-      : accounts;
+  // Export - 导出完整数据（账号+笔记）
+  const handleExport = useCallback(async () => {
+    const idsToExport = selectedIds.size > 0 ? Array.from(selectedIds) : [];
     
-    if (exportData.length === 0) {
+    if (accounts.length === 0) {
       alert('没有可导出的数据');
       return;
     }
     
-    const json = JSON.stringify(exportData, null, 2);
-    const blob = new Blob([json], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `accounts_${new Date().toISOString().slice(0, 10)}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+    try {
+      // 调用后端 API 获取完整数据（包含笔记）
+      const result = await accountApi.export(idsToExport, true);
+      
+      const json = JSON.stringify(result, null, 2);
+      const blob = new Blob([json], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `xhs_backup_${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      
+      const accountCount = result.accounts?.length || 0;
+      const noteCount = result.notes?.length || 0;
+      console.log(`✅ 导出成功: ${accountCount} 个账号, ${noteCount} 条笔记`);
+    } catch (err) {
+      console.error('Export failed:', err);
+      alert('导出失败: ' + err.message);
+    }
   }, [selectedIds, accounts]);
 
   // Show log modal

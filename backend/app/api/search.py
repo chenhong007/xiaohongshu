@@ -1,19 +1,13 @@
 """
 搜索相关 API
+
+使用统一的 CookieService 进行 Cookie 验证
 """
 from flask import Blueprint, jsonify, request, current_app
 
-from ..models import Cookie
+from ..services.cookie_service import CookieService
 
 search_bp = Blueprint('search', __name__)
-
-
-def get_active_cookie_str():
-    """获取当前激活的 Cookie 字符串"""
-    cookie = Cookie.query.filter_by(is_active=True, is_valid=True).first()
-    if cookie:
-        return cookie.cookie_str
-    return current_app.config.get('XHS_COOKIES', '')
 
 
 @search_bp.route('/search/users', methods=['GET'])
@@ -31,7 +25,8 @@ def search_users():
     if not keyword:
         return jsonify([])
     
-    cookie_str = get_active_cookie_str()
+    # 使用统一的 CookieService 获取 Cookie（会自动处理无效 Cookie 的重新验证）
+    cookie_str = CookieService.get_cookie_str()
     if not cookie_str:
         return jsonify({'error': '请先登录小红书账号'}), 401
     
@@ -115,7 +110,8 @@ def search_notes():
     if not keyword:
         return jsonify({'success': True, 'data': {'items': [], 'has_more': False}})
     
-    cookie_str = get_active_cookie_str()
+    # 使用统一的 CookieService 获取 Cookie（会自动处理无效 Cookie 的重新验证）
+    cookie_str = CookieService.get_cookie_str()
     if not cookie_str:
         return jsonify({'error': '请先登录小红书账号'}), 401
     

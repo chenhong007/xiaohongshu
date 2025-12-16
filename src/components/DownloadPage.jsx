@@ -209,13 +209,17 @@ export const DownloadPage = ({ accounts: cachedAccounts = [], accountsLoading = 
   // Auto-load notes on first mount
   // - Load immediately if accounts are ready
   // - Load after accountsLoading finishes (even if accounts is empty, notes can still load)
+  // - 使用 ref 防止 StrictMode 下的重复请求
+  const fetchingRef = useRef(false);
+  
   useEffect(() => {
-    if (!initialLoadRef.current && !accountsLoading) {
+    if (!initialLoadRef.current && !accountsLoading && !fetchingRef.current) {
       initialLoadRef.current = true;
+      fetchingRef.current = true;
       setDataLoaded(true);
-      // Use requestAnimationFrame to ensure fetchNotes is defined
-      requestAnimationFrame(() => {
-        fetchNotes();
+      // 直接调用，不使用 requestAnimationFrame 避免延迟
+      fetchNotes().finally(() => {
+        fetchingRef.current = false;
       });
     }
   }, [accountsLoading]);
@@ -290,9 +294,13 @@ export const DownloadPage = ({ accounts: cachedAccounts = [], accountsLoading = 
   }, [page, pageSize, sortBy, sortOrder, selectedUserIds, timeRange, customStartDate, customEndDate, keyword, matchMode, noteType, likedCountMin, collectedCountMin, commentCountMin, shareCountMin]);
 
   // 页码、排序变化时自动加载（仅在已加载过数据的情况下）
+  // 使用防抖避免快速切换页码时的重复请求
   useEffect(() => {
-    if (dataLoaded) {
-      fetchNotes();
+    if (dataLoaded && !fetchingRef.current) {
+      fetchingRef.current = true;
+      fetchNotes().finally(() => {
+        fetchingRef.current = false;
+      });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page, sortBy, sortOrder]);

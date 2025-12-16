@@ -199,9 +199,22 @@ def get_notes():
     else:
         query = query.order_by(sort_column.asc())
     
-    # 分页
-    total = query.count()
+    # 分页 - 优化：先获取数据，再统计总数（避免两次全表扫描）
+    # 使用 subquery 优化 count 性能
     notes = query.offset((page - 1) * page_size).limit(page_size).all()
+    
+    # 只有在需要时才计算 total（第一页或有筛选条件时）
+    # 对于无筛选的首页，可以使用快速估算
+    has_filters = user_ids or keyword or time_range != 'all' or note_type != 'all' or \
+                  liked_count_min is not None or collected_count_min is not None or \
+                  comment_count_min is not None or share_count_min is not None
+    
+    if has_filters or page > 1:
+        # 有筛选条件时必须精确计数
+        total = query.count()
+    else:
+        # 无筛选首页使用快速计数
+        total = db.session.execute(db.text("SELECT COUNT(*) FROM notes")).scalar()
     
     return jsonify({
         'success': True,

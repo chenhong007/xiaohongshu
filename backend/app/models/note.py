@@ -10,10 +10,16 @@ class Note(db.Model):
     """笔记模型"""
     __tablename__ = 'notes'
     
-    # Add composite index for common query patterns
+    # Add indexes for common query patterns (排序、筛选、复合查询)
     __table_args__ = (
+        # 复合索引：用户+时间、用户+类型（常用筛选组合）
         db.Index('ix_notes_user_upload_time', 'user_id', 'upload_time'),
         db.Index('ix_notes_user_type', 'user_id', 'type'),
+        # 排序字段索引（点赞、收藏、评论、转发排序）
+        db.Index('ix_notes_liked_count', 'liked_count'),
+        db.Index('ix_notes_collected_count', 'collected_count'),
+        db.Index('ix_notes_comment_count', 'comment_count'),
+        db.Index('ix_notes_share_count', 'share_count'),
     )
     
     note_id = db.Column(db.String(64), primary_key=True)

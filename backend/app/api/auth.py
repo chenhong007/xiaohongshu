@@ -1,5 +1,8 @@
 """
 认证相关 API
+
+注意：Cookie 验证逻辑已统一封装到 CookieService 中
+所有 Cookie 相关操作都应使用 CookieService 的方法
 """
 from flask import Blueprint, request, current_app
 from datetime import datetime
@@ -10,12 +13,10 @@ from ..utils.responses import ApiResponse, success_response
 from ..utils.validators import validate_cookie_str, validate_filled_at
 from ..utils.crypto import encrypt_cookie, decrypt_cookie, get_crypto
 from ..utils.logger import get_logger
+from ..services.cookie_service import CookieService
 
 auth_bp = Blueprint('auth', __name__)
 logger = get_logger('auth')
-
-# Cookie 验证间隔（秒）- 5分钟内不重复验证
-COOKIE_CHECK_INTERVAL = 300
 
 
 def reset_account_errors():
@@ -38,192 +39,39 @@ def reset_account_errors():
         logger.error(f"清理账号错误状态失败: {e}")
 
 
+# ============================================================
+# 以下函数保留为兼容性别名，实际调用 CookieService 的方法
+# 新代码应直接使用 CookieService
+# ============================================================
+
 def get_active_cookie():
-    """
-    获取当前激活的 Cookie（已解密）
-    
-    Returns:
-        Cookie 字符串或空字符串
-    """
-    cookie = Cookie.query.filter_by(is_active=True, is_valid=True).first()
-    if cookie:
-        return cookie.get_cookie_str()
-    # 如果数据库没有，尝试从配置获取
-    return current_app.config.get('XHS_COOKIES', '')
+    """获取当前激活的 Cookie 字符串（兼容性别名）"""
+    return CookieService.get_cookie_str()
 
 
 def invalidate_cookie(cookie_id=None):
-    """
-    标记 Cookie 失效
-    用于 API 调用失败时自动失效
-    同时记录运行时长
-    """
-    if cookie_id:
-        cookie = Cookie.query.get(cookie_id)
-    else:
-        cookie = Cookie.query.filter_by(is_active=True).first()
-    
-    if cookie:
-        # 停止运行计时器并记录时长
-        cookie.stop_run_timer()
-        cookie.is_valid = False
-        cookie.last_checked = datetime.utcnow()
-        db.session.commit()
-        logger.info(f"Cookie {cookie.id} 已标记失效，运行时长: {cookie.last_valid_duration}秒")
-        return True
-    return False
+    """标记 Cookie 失效（兼容性别名）"""
+    return CookieService.invalidate(cookie_id)
 
 
 def get_recent_valid_cookie():
-    """
-    获取最近的有效历史 Cookie
-    优先使用最近添加且有效的 Cookie
-    """
-    # 首先检查当前激活的
-    active_cookie = Cookie.query.filter_by(is_active=True, is_valid=True).first()
-    if active_cookie:
-        return active_cookie
-    
-    # 没有激活的，查找最近的有效 Cookie
-    recent_cookie = Cookie.query.filter_by(is_valid=True).order_by(Cookie.updated_at.desc()).first()
-    if recent_cookie:
-        # 将其设为激活
-        Cookie.query.update({'is_active': False})
-        recent_cookie.is_active = True
-        db.session.commit()
-        logger.info(f"自动激活历史 Cookie: {recent_cookie.id}")
-        return recent_cookie
-    
-    return None
+    """获取最近的有效历史 Cookie（兼容性别名）"""
+    return CookieService.get_recent_valid_cookie()
 
 
 def should_validate_cookie(cookie):
-    """
-    判断是否需要验证 Cookie
-    基于上次检查时间，避免频繁验证
-    """
-    if not cookie.last_checked:
-        return True
-    
-    time_since_check = datetime.utcnow() - cookie.last_checked
-    return time_since_check.total_seconds() > COOKIE_CHECK_INTERVAL
+    """判断是否需要验证 Cookie（兼容性别名）"""
+    return CookieService.should_validate(cookie)
 
 
 def validate_cookie_if_needed(cookie, force=False):
-    """
-    按需验证 Cookie
-    返回: (is_valid, user_info_dict or None)
-    """
-    # 如果不需要验证且标记为有效，直接返回
-    if not force and not should_validate_cookie(cookie) and cookie.is_valid:
-        return True, None
-    
-    # 记录之前的状态
-    was_valid = cookie.is_valid
-    
-    try:
-        from Spider_XHS.apis.xhs_pc_apis import XHS_Apis
-        xhs_apis = XHS_Apis()
-        
-        # 获取解密后的 Cookie
-        cookie_str = cookie.get_cookie_str()
-        
-        # 先尝试 v1 selfinfo 接口
-        success, msg, res = xhs_apis.get_user_self_info(cookie_str)
-        logger.info(f"[validate_cookie] selfinfo v1 返回: success={success}, msg={msg}")
-        
-        # 如果 v1 成功，再尝试 v2 接口获取更详细的信息
-        res2_data = None
-        if success:
-            try:
-                success2, msg2, res2 = xhs_apis.get_user_self_info2(cookie_str)
-                logger.info(f"[validate_cookie] selfinfo v2 返回: success={success2}, msg={msg2}")
-                if success2 and res2.get('data'):
-                    res2_data = res2['data']
-                    logger.info(f"[validate_cookie] v2 数据键: {list(res2_data.keys()) if isinstance(res2_data, dict) else type(res2_data)}")
-            except Exception as e:
-                logger.warning(f"[validate_cookie] v2 接口调用失败: {e}")
-        
-        # 更新验证状态
-        cookie.last_checked = datetime.utcnow()
-        cookie.is_valid = success
-        
-        if success and res.get('data'):
-            # 验证成功，启动运行计时器（如果还没有启动）
-            cookie.start_run_timer()
-            
-            # 优先使用 v2 数据（如果有），否则使用 v1 数据
-            data_to_use = res2_data if res2_data else res['data']
-            logger.info(f"[validate_cookie] 使用{'v2' if res2_data else 'v1'}数据提取用户信息")
-            
-            # 更新用户信息（可能有变化）
-            user_id, nickname, avatar = extract_user_info(data_to_use)
-            if user_id:
-                cookie.user_id = user_id
-            if nickname and nickname != '未知用户':
-                cookie.nickname = nickname
-            if avatar:
-                cookie.avatar = avatar
-        elif was_valid and not success:
-            # Cookie 从有效变为无效，停止计时器
-            cookie.stop_run_timer()
-            logger.info(f"Cookie {cookie.id} 失效，运行时长: {cookie.last_valid_duration}秒")
-        
-        db.session.commit()
-        return success, res.get('data') if success else None
-        
-    except Exception as e:
-        logger.error(f"Cookie validation error: {e}")
-        cookie.last_checked = datetime.utcnow()
-        if was_valid:
-            cookie.stop_run_timer()
-        cookie.is_valid = False
-        db.session.commit()
-        return False, None
+    """按需验证 Cookie（兼容性别名）"""
+    return CookieService.validate_if_needed(cookie, force)
 
 
 def extract_user_info(res_data):
-    """从 API 响应中提取用户信息"""
-    if not res_data:
-        return None, None, None
-    
-    # 调试：打印 API 返回的原始数据结构
-    logger.info(f"[extract_user_info] 原始数据键: {list(res_data.keys()) if isinstance(res_data, dict) else type(res_data)}")
-    
-    # 尝试获取 basic_info，如果不存在则使用 data 本身
-    basic_info = res_data.get('basic_info', res_data)
-    
-    # 调试：打印 basic_info 的键
-    if basic_info and basic_info != res_data:
-        logger.info(f"[extract_user_info] basic_info 键: {list(basic_info.keys()) if isinstance(basic_info, dict) else type(basic_info)}")
-    
-    # 获取昵称（尝试多个字段）
-    # selfinfo 接口可能返回 'nickname' 直接在根级别
-    nickname = (basic_info.get('nickname') or 
-                res_data.get('nickname') or 
-                res_data.get('nick_name') or
-                '未知用户')
-    
-    # 获取头像（尝试多个字段）
-    # selfinfo 接口可能使用 'headPhoto' 或 'head_photo' 或 'image'
-    avatar = (basic_info.get('imageb') or basic_info.get('images') or 
-              basic_info.get('avatar') or basic_info.get('head_photo') or
-              basic_info.get('headPhoto') or
-              res_data.get('imageb') or res_data.get('images') or 
-              res_data.get('avatar') or res_data.get('head_photo') or 
-              res_data.get('headPhoto') or
-              res_data.get('image') or '')
-    
-    # 获取用户ID（尝试多个字段）
-    # selfinfo 接口可能使用 'userId' 或 'user_id'
-    user_id = (basic_info.get('user_id') or basic_info.get('userId') or
-               basic_info.get('red_id') or basic_info.get('redId') or
-               res_data.get('user_id') or res_data.get('userId') or
-               res_data.get('red_id') or res_data.get('redId') or '')
-    
-    logger.info(f"[extract_user_info] 提取结果: user_id={user_id}, nickname={nickname}, avatar={avatar[:50] if avatar else 'None'}...")
-    
-    return user_id, nickname, avatar
+    """从 API 响应中提取用户信息（兼容性别名）"""
+    return CookieService._extract_user_info(res_data)
 
 
 @auth_bp.route('/user/me', methods=['GET'])
@@ -242,17 +90,18 @@ def get_current_user():
     """
     force_check = request.args.get('force_check', 'false').lower() == 'true'
     
+    # 使用统一的 CookieService 获取和验证 Cookie
     # 优先使用最近的有效历史 Cookie
-    cookie = get_recent_valid_cookie()
+    cookie = CookieService.get_recent_valid_cookie()
     
     if not cookie:
         # 没有有效 Cookie，尝试获取任何激活的 Cookie（可能已失效）
-        cookie = Cookie.query.filter_by(is_active=True).first()
+        cookie = CookieService.get_active_cookie()
     
     if cookie:
-        # 按需验证 Cookie（基于时间间隔或强制验证）
-        if force_check or should_validate_cookie(cookie):
-            is_valid, _ = validate_cookie_if_needed(cookie, force=force_check)
+        # 使用统一的验证逻辑（会自动处理无效 Cookie 的重新验证）
+        if force_check or CookieService.should_validate(cookie):
+            is_valid, _ = CookieService.validate_if_needed(cookie, force=force_check)
             if not is_valid:
                 # Cookie 失效，返回失效信息和上次运行时长
                 run_info = cookie.get_run_info()
@@ -308,7 +157,7 @@ def get_current_user():
             success, msg, res = xhs_apis.get_user_self_info(cookies_str)
             
             if success and res.get('data'):
-                user_id, nickname, avatar = extract_user_info(res['data'])
+                user_id, nickname, avatar = CookieService._extract_user_info(res['data'])
                 return success_response({
                     'is_connected': True,
                     'user_id': user_id,

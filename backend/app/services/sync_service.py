@@ -36,6 +36,11 @@ from .sync.delay_manager import AdaptiveDelayManager, get_adaptive_delay_manager
 from .sync.session_pool import RequestSessionPool, get_request_session_pool
 from .sync.log_collector import SyncLogCollector
 from .sync.media_queue import MediaDownloadQueue, get_media_download_queue
+from .sync.note_validator import NoteValidator, DeepSyncValidator
+from .sync.note_persistence import NotePersistenceService
+from .sync.state_manager import SyncStateManager, batch_mark_failed
+from .sync.token_manager import XsecTokenManager
+from .sync.note_converter import NoteDataConverter
 
 # Spider_XHS imports
 try:
@@ -170,131 +175,6 @@ class SyncService:
             return 0
     
     @staticmethod
-    def _parse_count(value) -> int:
-        """Parse count value that may be a string like '10.1万' to integer.
-        
-        Args:
-            value: Count value, can be int, str like '10.1万', '1.2亿', or None
-            
-        Returns:
-            Integer count value
-        """
-        if value is None:
-            return 0
-        if isinstance(value, int):
-            return value
-        if isinstance(value, float):
-            return int(value)
-        if isinstance(value, str):
-            value = value.strip()
-            if not value:
-                return 0
-            try:
-                # Try direct conversion first
-                return int(value)
-            except ValueError:
-                pass
-            try:
-                # Handle Chinese units: 万 (10000), 亿 (100000000)
-                if '亿' in value:
-                    num = float(value.replace('亿', ''))
-                    return int(num * 100000000)
-                elif '万' in value:
-                    num = float(value.replace('万', ''))
-                    return int(num * 10000)
-                else:
-                    return int(float(value))
-            except (ValueError, TypeError):
-                return 0
-        return 0
-    
-    @staticmethod
-    def _convert_list_note(simple_note: Dict, user_id: str = None) -> Dict:
-        """Convert list API note data to save format.
-        
-        List API returns different structure than detail API.
-        This function converts list data to the format expected by _save_note.
-        
-        Args:
-            simple_note: Note data from list API (get_user_all_notes)
-            user_id: User ID to use if not in note data
-            
-        Returns:
-            Dict in format expected by _save_note
-        """
-        note_id = simple_note.get('note_id') or simple_note.get('id') or ''
-        
-        # Extract user info from nested structure or flat structure
-        user_info = simple_note.get('user') or {}
-        note_user_id = user_info.get('user_id') or simple_note.get('user_id') or user_id or ''
-        nickname = user_info.get('nickname') or simple_note.get('nickname') or ''
-        avatar = user_info.get('avatar') or simple_note.get('avatar') or ''
-        
-        # Title can be in different fields
-        title = simple_note.get('display_title') or simple_note.get('title') or ''
-        if not title or title.strip() == '':
-            title = '无标题'
-        
-        # Note type
-        note_type = simple_note.get('type') or 'normal'
-        if note_type == 'normal':
-            note_type = '图集'
-        elif note_type == 'video':
-            note_type = '视频'
-        
-        # Interact info - can be nested or flat, parse string counts like "10.1万"
-        interact_info = simple_note.get('interact_info') or {}
-        liked_count = SyncService._parse_count(interact_info.get('liked_count') or simple_note.get('liked_count'))
-        collected_count = SyncService._parse_count(interact_info.get('collected_count') or simple_note.get('collected_count'))
-        comment_count = SyncService._parse_count(interact_info.get('comment_count') or simple_note.get('comment_count'))
-        share_count = SyncService._parse_count(interact_info.get('share_count') or simple_note.get('share_count'))
-        
-        # Cover image
-        cover_info = simple_note.get('cover') or {}
-        cover_url = ''
-        if isinstance(cover_info, dict):
-            info_list = cover_info.get('info_list') or cover_info.get('url_default') or []
-            if isinstance(info_list, list) and len(info_list) > 0:
-                # Try to get higher quality image
-                cover_url = info_list[-1].get('url') if isinstance(info_list[-1], dict) else str(info_list[-1])
-            elif isinstance(info_list, str):
-                cover_url = info_list
-            # Fallback to url field
-            if not cover_url:
-                cover_url = cover_info.get('url') or cover_info.get('url_default') or ''
-        elif isinstance(cover_info, str):
-            cover_url = cover_info
-        
-        # Build note URL
-        xsec_token = simple_note.get('xsec_token') or ''
-        note_url = f"https://www.xiaohongshu.com/explore/{note_id}"
-        if xsec_token:
-            note_url = f"{note_url}?xsec_token={xsec_token}&xsec_source=pc_search"
-        
-        return {
-            'note_id': note_id,
-            'note_url': note_url,
-            'note_type': note_type,
-            'user_id': note_user_id,
-            'nickname': nickname,
-            'avatar': avatar,
-            'title': title,
-            'desc': simple_note.get('desc') or '',
-            'liked_count': liked_count,
-            'collected_count': collected_count,
-            'comment_count': comment_count,
-            'share_count': share_count,
-            'video_cover': cover_url if note_type == '视频' else None,
-            'video_addr': simple_note.get('video_addr') or None,
-            'image_list': [cover_url] if cover_url else [],
-            'tags': simple_note.get('tags') or [],
-            'upload_time': simple_note.get('upload_time') or None,
-            'ip_location': simple_note.get('ip_location') or '',
-            'cover_remote': cover_url,
-            'xsec_token': xsec_token,
-        }
-    
-    @staticmethod
     def _reset_rate_limit_counter() -> None:
         """Reset rate limit counter and adaptive delay manager."""
         with SyncService._rate_limit_lock:
@@ -333,22 +213,11 @@ class SyncService:
     
     @staticmethod
     def _mark_accounts_failed(account_ids: Set[int], message: str) -> None:
-        """Mark accounts as failed to prevent UI stuck in 'preparing' state."""
-        if not account_ids:
-            return
-        try:
-            Account.query.filter(Account.id.in_(list(account_ids))).update(
-                {
-                    'status': 'failed',
-                    'error_message': message,
-                    'progress': 0
-                },
-                synchronize_session=False
-            )
-            db.session.commit()
-        except Exception as e:
-            logger.error(f"Failed to batch mark accounts as failed: {e}")
-            db.session.rollback()
+        """Mark accounts as failed to prevent UI stuck in 'preparing' state.
+        
+        Note: This is a wrapper around batch_mark_failed for backward compatibility.
+        """
+        batch_mark_failed(account_ids, message)
     
     @staticmethod
     def stop_sync() -> None:
@@ -394,11 +263,25 @@ class SyncService:
         return False
 
     @staticmethod
-    def _get_missing_required_fields(note: Note) -> List[str]:
+    def _get_missing_required_fields(note: Note, critical_only: bool = False) -> List[str]:
         """Get list of missing required fields for a note.
         
         In deep sync mode, if any of these fields are missing, we need to
         fetch detail page to refresh all data.
+        
+        IMPORTANT: List API (get_user_all_notes) does NOT return these fields:
+        - upload_time: 发布时间 - 只有详情API返回
+        - desc: 完整内容详情 - 列表API可能返回空或截断
+        - image_list: 完整图片列表 - 列表API只有封面图
+        - collected_count, comment_count, share_count: 可能缺失
+        
+        Args:
+            note: Note object to check
+            critical_only: If True, only return critical fields (upload_time, desc)
+                          that definitely require detail API
+        
+        Returns:
+            List of missing field names
         """
         if not note:
             return ['note']
@@ -408,22 +291,30 @@ class SyncService:
         def is_blank(value):
             return value is None or (isinstance(value, str) and value.strip() == '')
 
-        # Basic text fields
+        # ===== CRITICAL FIELDS (only available from detail API) =====
+        # upload_time: 发布时间 - 列表API永远不返回此字段！
+        # 这是判断笔记数据是否完整的最重要指标
+        if is_blank(getattr(note, 'upload_time', None)):
+            missing_fields.append('upload_time')
+        
+        # desc: 内容详情 - 列表API可能返回空
+        # 允许空字符串（用户确实没写描述），但不允许None
+        if getattr(note, 'desc', None) is None:
+            missing_fields.append('desc')
+        
+        if critical_only:
+            return missing_fields
+        
+        # ===== BASIC FIELDS (usually available from list API) =====
         for field in ['note_id', 'user_id', 'nickname', 'avatar', 'title']:
             if is_blank(getattr(note, field, None)):
                 missing_fields.append(field)
 
-        # Desc allows empty string but not None
-        if getattr(note, 'desc', None) is None:
-            missing_fields.append('desc')
-
-        # Upload time required for sorting/display
-        if is_blank(getattr(note, 'upload_time', None)):
-            missing_fields.append('upload_time')
-
-        # Interaction fields - None means not fetched
+        # ===== INTERACTION FIELDS (may be missing from list API) =====
+        # liked_count 通常列表API会返回
         if getattr(note, 'liked_count', None) is None:
             missing_fields.append('liked_count')
+        # 这些字段列表API可能不返回
         if getattr(note, 'share_count', None) is None:
             missing_fields.append('share_count')
         if getattr(note, 'collected_count', None) is None:
@@ -431,6 +322,7 @@ class SyncService:
         if getattr(note, 'comment_count', None) is None:
             missing_fields.append('comment_count')
 
+        # ===== MEDIA FIELDS =====
         # Cover fields
         for field in ['cover_remote', 'cover_local']:
             if is_blank(getattr(note, field, None)):
@@ -446,6 +338,7 @@ class SyncService:
                 image_list = json.loads(note.image_list) if note.image_list else []
             except Exception:
                 image_list = []
+            # 列表API只返回封面图，所以图片列表<=1表示没有获取过详情
             if len(image_list) <= 1:
                 missing_fields.append('image_list')
 
@@ -454,6 +347,31 @@ class SyncService:
             missing_fields.append('local_media')
 
         return missing_fields
+    
+    @staticmethod
+    def _is_note_data_complete(note: Note) -> bool:
+        """Check if note has complete data from detail API.
+        
+        A note is considered complete if it has:
+        - upload_time (only available from detail API)
+        - desc (may be empty string, but not None)
+        
+        Returns:
+            True if note data is complete
+        """
+        if not note:
+            return False
+        
+        # upload_time is the key indicator - list API never returns it
+        upload_time = getattr(note, 'upload_time', None)
+        if upload_time is None or (isinstance(upload_time, str) and upload_time.strip() == ''):
+            return False
+        
+        # desc should not be None (empty string is OK)
+        if getattr(note, 'desc', None) is None:
+            return False
+        
+        return True
 
     @staticmethod
     def _handle_auth_error(msg: str) -> bool:
@@ -555,24 +473,20 @@ class SyncService:
     def check_cookie_valid() -> Tuple[bool, str]:
         """Check if current Cookie is valid.
         
+        使用统一的 CookieService 进行验证（会自动处理无效 Cookie 的重新验证）
+        
         Returns:
             Tuple of (is_valid, error_message)
         """
-        cookie = Cookie.query.filter_by(is_active=True).first()
-        if not cookie:
-            return False, 'No Cookie configured, please login first'
-        if not cookie.is_valid:
-            return False, 'Cookie has expired, please re-login to update Cookie'
-        return True, ''
+        return CookieService.check_valid()
     
     @staticmethod
     def get_cookie_str() -> str:
-        """Get valid decrypted Cookie string."""
-        cookie = Cookie.query.filter_by(is_active=True, is_valid=True).first()
-        if cookie:
-            return cookie.get_cookie_str()
+        """Get valid decrypted Cookie string.
         
-        return getattr(Config, 'XHS_COOKIES', '')
+        使用统一的 CookieService 获取 Cookie（会自动处理无效 Cookie 的重新验证）
+        """
+        return CookieService.get_cookie_str()
     
     @staticmethod
     def start_sync(account_ids: List[int], sync_mode: str = 'fast') -> None:
@@ -664,7 +578,7 @@ class SyncService:
             db.session.commit()
             return
         
-        # Create log collectors for deep sync
+        # Create log collectors for all sync modes (to track sync type)
         sync_log_collectors = {}
         
         for acc_id in account_ids:
@@ -672,10 +586,9 @@ class SyncService:
                 logger.info("Sync stopped by user")
                 break
                 
-            sync_log = None
-            if sync_mode == 'deep':
-                sync_log = SyncLogCollector(acc_id, sync_mode)
-                sync_log_collectors[acc_id] = sync_log
+            # 为所有同步模式创建日志收集器，以便记录最近一次同步类型
+            sync_log = SyncLogCollector(acc_id, sync_mode)
+            sync_log_collectors[acc_id] = sync_log
             
             try:
                 account = Account.query.get(acc_id)
@@ -702,14 +615,13 @@ class SyncService:
                     account.sync_logs = None
                 db.session.commit()
                 
-                # Get user xsec_token
+                # 使用 XsecTokenManager 统一管理 token
+                token_mgr = XsecTokenManager(xhs_apis, cookie_str)
                 warning_msg = None
-                xsec_token = SyncService._fetch_user_xsec_token(account.user_id, xhs_apis, cookie_str)
+                xsec_token = token_mgr.get_user_token(account.user_id)
+                user_url = token_mgr.build_user_url(account.user_id, xsec_token)
                 
-                if xsec_token:
-                    user_url = f'https://www.xiaohongshu.com/user/profile/{account.user_id}?xsec_token={xsec_token}&xsec_source=pc_search'
-                else:
-                    user_url = f'https://www.xiaohongshu.com/user/profile/{account.user_id}'
+                if not xsec_token:
                     warning_msg = "Failed to get user xsec_token, sync may fail"
                     logger.warning(f"Failed to fetch xsec_token for account {account.user_id}")
                     sync_log_broadcaster.warn(warning_msg, account_id=acc_id, account_name=account_name)
@@ -724,12 +636,12 @@ class SyncService:
                 # Get all notes
                 success, msg, all_note_info = xhs_apis.get_user_all_notes(user_url, cookie_str)
                 
-                # Retry with refreshed token if needed
-                if not success and sync_mode == 'deep' and SyncService._is_xsec_token_error(msg):
-                    new_token = SyncService._fetch_user_xsec_token(account.user_id, xhs_apis, cookie_str)
+                # Retry with refreshed token if needed (使用 token_mgr 的 refresh 方法)
+                if not success and sync_mode == 'deep' and XsecTokenManager.is_token_error(msg):
+                    new_token = token_mgr.refresh_user_token(account.user_id)
                     if new_token and new_token != xsec_token:
                         xsec_token = new_token
-                        user_url = f'https://www.xiaohongshu.com/user/profile/{account.user_id}?xsec_token={xsec_token}&xsec_source=pc_search'
+                        user_url = token_mgr.build_user_url(account.user_id, xsec_token)
                         success, msg, all_note_info = xhs_apis.get_user_all_notes(user_url, cookie_str)
                 
                 # Retry if empty list
@@ -738,7 +650,7 @@ class SyncService:
                     new_token = SyncService._fetch_user_xsec_token(account.user_id, xhs_apis, cookie_str)
                     if new_token and new_token != xsec_token:
                         xsec_token = new_token
-                        user_url = f'https://www.xiaohongshu.com/user/profile/{account.user_id}?xsec_token={xsec_token}&xsec_source=pc_search'
+                        user_url = token_mgr.build_user_url(account.user_id, xsec_token)
                         success_retry, msg_retry, all_note_info_retry = xhs_apis.get_user_all_notes(user_url, cookie_str)
                         if success_retry and all_note_info_retry:
                             success, msg, all_note_info = success_retry, msg_retry, all_note_info_retry
@@ -809,10 +721,24 @@ class SyncService:
                 existing_note_ids_cache = set(existing_notes_cache.keys())
                 logger.debug(f"[Cache] Pre-loaded {len(existing_note_ids_cache)}/{len(all_note_ids)} existing notes")
                 
-                # Filter notes for deep sync (skip old completed notes - they don't count in denominator)
+                # Filter notes for deep sync using NoteValidator
+                # Pre-sync validation: identify which notes need to be fetched
                 if sync_mode == 'deep':
+                    # Create validator for this account
+                    deep_validator = DeepSyncValidator(acc_id, account.user_id)
+                    
+                    # Get existing notes for validation
+                    existing_notes_list = list(existing_notes_cache.values())
+                    
+                    # Run pre-sync validation
+                    pre_validation_summary = deep_validator.pre_sync_validate(existing_notes_list)
+                    if sync_log:
+                        sync_log.set_pre_validation(pre_validation_summary)
+                    
+                    # Filter notes based on validation
                     filtered_notes = []
                     excluded_count = 0  # 排除的笔记数（不计入分母）
+                    
                     for note in all_note_info:
                         note_id = note.get('note_id') or note.get('id')
                         existing_note = existing_notes_cache.get(note_id)
@@ -822,57 +748,26 @@ class SyncService:
                             filtered_notes.append(note)
                             continue
                         
-                        # 已存在的笔记：检查 upload_time 是否缺失
-                        # 如果缺失，无论多久都需要深度同步
-                        existing_upload_time = getattr(existing_note, 'upload_time', None)
-                        if not existing_upload_time or (isinstance(existing_upload_time, str) and existing_upload_time.strip() == ''):
-                            # upload_time 缺失，必须深度同步
+                        # 使用 NoteValidator 判断是否需要同步
+                        needs_sync, reasons = NoteValidator.needs_deep_sync(existing_note)
+                        
+                        if needs_sync:
                             filtered_notes.append(note)
-                            logger.debug(f"Note {note_id} missing upload_time, must fetch detail")
-                            continue
-                        
-                        # 从数据库已存在的笔记获取 upload_time 来判断是否超过7天
-                        is_old_note = False
-                        try:
-                            upload_time_str = existing_upload_time
-                            if isinstance(upload_time_str, (int, float)):
-                                upload_dt = datetime.fromtimestamp(upload_time_str)
-                            elif isinstance(upload_time_str, str):
-                                upload_dt = None
-                                for fmt in ['%Y-%m-%d %H:%M:%S', '%Y-%m-%d', '%Y/%m/%d %H:%M:%S', '%Y/%m/%d']:
-                                    try:
-                                        upload_dt = datetime.strptime(upload_time_str, fmt)
-                                        break
-                                    except ValueError:
-                                        continue
-                            else:
-                                upload_dt = None
-                            
-                            if upload_dt:
-                                age_days = (datetime.utcnow() - upload_dt).total_seconds() / 86400
-                                is_old_note = age_days > 7
-                        except Exception:
-                            pass
-                        
-                        should_include = True  # 是否计入分母
-                        
-                        if is_old_note:
-                            # 超过7天的旧笔记：检查是否数据完整
-                            missing_fields = SyncService._get_missing_required_fields(existing_note)
-                            if not missing_fields:
-                                # 数据完整，不需要处理，不计入分母
-                                should_include = False
-                                logger.debug(f"Note {note_id} is old (>7 days) and complete, excluding from sync")
-                        # 新笔记（无论新旧）都需要处理，计入分母
-                        # 旧笔记但数据不完整也需要处理，计入分母
-                            
-                        if should_include:
-                            filtered_notes.append(note)
+                            if reasons:
+                                logger.debug(f"Note {note_id} needs sync: {', '.join(reasons)}")
                         else:
+                            # 数据完整，不需要处理，不计入分母
                             excluded_count += 1
+                            logger.debug(f"Note {note_id} is old (>7 days) and complete, excluding from sync")
                     
                     if excluded_count > 0:
                         logger.info(f"Excluded {excluded_count} old completed notes from deep sync (not counted in total)")
+                        sync_log_broadcaster.info(
+                            f"已排除 {excluded_count} 条数据完整的旧笔记",
+                            account_id=acc_id,
+                            account_name=account_name,
+                            extra={'excluded_count': excluded_count}
+                        )
                         all_note_info = filtered_notes
 
                 total = len(all_note_info)
@@ -916,24 +811,30 @@ class SyncService:
                             # 新笔记：需要获取详情
                             need_fetch_detail = True
                         else:
-                            # 已存在的笔记：检查是否有缺失字段
-                            missing_fields = SyncService._get_missing_required_fields(existing_note)
-                            if missing_fields:
+                            # 使用 NoteValidator 判断是否需要获取详情
+                            needs_sync, reasons = NoteValidator.needs_deep_sync(existing_note)
+                            if needs_sync:
                                 need_fetch_detail = True
-                                logger.debug(f"Note {note_id} missing fields: {missing_fields}")
+                                logger.debug(f"Note {note_id} needs detail fetch: {', '.join(reasons)}")
 
                     if not need_fetch_detail:
                         # Quick update from list data
                         try:
                             if note_xsec_token:
                                 simple_note['xsec_token'] = note_xsec_token
-                            # Use list note converter instead of handle_note_info (which expects detail format)
-                            cleaned_data = SyncService._convert_list_note(simple_note, user_id=account.user_id)
+                            # Get existing note for preserving fields that list API doesn't provide
+                            existing_note = existing_notes_cache.get(note_id)
+                            # Use NoteDataConverter for unified list API data conversion
+                            # Pass existing_note to preserve fields like upload_time, desc, etc.
+                            cleaned_data = NoteDataConverter.convert_from_list_api(
+                                simple_note, 
+                                user_id=account.user_id,
+                                existing_note=existing_note
+                            )
                             
                             if sync_mode == 'deep':
-                                existing_note = existing_notes_cache.get(note_id)
                                 if existing_note:
-                                    # 已存在的笔记，只更新点赞数
+                                    # 已存在的笔记，只更新点赞数（其他字段已在 NoteDataConverter 中保留）
                                     if cleaned_data['liked_count'] is not None:
                                         existing_note.liked_count = cleaned_data['liked_count']
                                     existing_note.last_updated = datetime.utcnow()
@@ -941,6 +842,8 @@ class SyncService:
                                         sync_log.record_skipped()
                                 else:
                                     # 修复：新笔记需要保存并记录为成功
+                                    # 注意：新笔记通过列表API保存时，upload_time等字段会缺失
+                                    # 这种情况下笔记会被标记为需要深度同步
                                     SyncService._save_note(cleaned_data, download_media=False, auto_commit=False)
                                     if sync_log:
                                         sync_log.record_success(note_id, is_new=True)
@@ -1172,21 +1075,26 @@ class SyncService:
                             existing_note = existing_notes_cache.get(note_id)
                             missing_fields = []
                             
-                            # 检查哪些字段缺失
-                            if not simple_note.get('upload_time') and (not existing_note or not existing_note.upload_time):
+                            # 检查哪些字段缺失 - 列表API不提供这些字段
+                            # upload_time: 列表API永远不返回此字段
+                            if not existing_note or not existing_note.upload_time:
                                 missing_fields.append('upload_time')
-                            if simple_note.get('collected_count') is None and (not existing_note or existing_note.collected_count is None):
+                            # desc: 列表API可能返回空或截断的内容
+                            if not existing_note or not existing_note.desc:
+                                missing_fields.append('desc')
+                            # 互动数据: 列表API可能不返回所有计数
+                            if not existing_note or existing_note.collected_count is None:
                                 missing_fields.append('collected_count')
-                            if simple_note.get('comment_count') is None and (not existing_note or existing_note.comment_count is None):
+                            if not existing_note or existing_note.comment_count is None:
                                 missing_fields.append('comment_count')
-                            if simple_note.get('share_count') is None and (not existing_note or existing_note.share_count is None):
+                            if not existing_note or existing_note.share_count is None:
                                 missing_fields.append('share_count')
                             
                             if sync_log:
                                 sync_log.add_issue(
                                     SyncLogCollector.TYPE_MISSING_FIELD,
                                     note_id=note_id,
-                                    message=f"Fallback to list data, missing: {', '.join(missing_fields) if missing_fields else 'none (using existing data)'}",
+                                    message=f"Fallback to list data (detail API failed), missing: {', '.join(missing_fields) if missing_fields else 'none'}",
                                     fields=missing_fields if missing_fields else []
                                 )
                             
@@ -1194,24 +1102,17 @@ class SyncService:
                                 if note_xsec_token:
                                     simple_note['xsec_token'] = note_xsec_token
                                 
-                                # 方案3：如果已有笔记，尝试保留已有字段
-                                if existing_note:
-                                    # 保留已有字段到simple_note中，避免被覆盖
-                                    if existing_note.upload_time:
-                                        simple_note['upload_time'] = existing_note.upload_time
-                                    if existing_note.collected_count is not None:
-                                        simple_note['collected_count'] = existing_note.collected_count
-                                    if existing_note.comment_count is not None:
-                                        simple_note['comment_count'] = existing_note.comment_count
-                                    if existing_note.share_count is not None:
-                                        simple_note['share_count'] = existing_note.share_count
-                                
-                                # Use list note converter instead of handle_note_info (which expects detail format)
-                                cleaned_data = SyncService._convert_list_note(simple_note, user_id=account.user_id)
+                                # 使用 NoteDataConverter 进行统一的列表API数据转换
+                                # 传入 existing_note 以保留已有字段（如 upload_time, desc 等）
+                                cleaned_data = NoteDataConverter.convert_from_list_api(
+                                    simple_note, 
+                                    user_id=account.user_id,
+                                    existing_note=existing_note
+                                )
                                 # 判断是否是新增笔记
                                 is_new_note = note_id not in existing_note_ids_cache
                                 SyncService._save_note(cleaned_data, download_media=False, auto_commit=False)
-                                logger.debug(f"Note {note_id} saved with list data (fallback)")
+                                logger.debug(f"Note {note_id} saved with list data (fallback), missing fields: {missing_fields}")
                                 # 修复：记录成功（虽然是fallback，但笔记已保存）
                                 if sync_log:
                                     sync_log.record_success(note_id, is_new=is_new_note)
@@ -1273,6 +1174,41 @@ class SyncService:
                     account.loaded_msgs = total
                     account.last_sync = datetime.utcnow()
                     account.sync_heartbeat = None
+                    
+                    # Post-sync validation for deep sync
+                    if sync_mode == 'deep' and 'deep_validator' in locals():
+                        try:
+                            # Re-fetch notes from database for validation
+                            all_note_ids_for_validation = [n.get('note_id') or n.get('id') for n in all_note_info]
+                            synced_notes = Note.query.filter(Note.note_id.in_(all_note_ids_for_validation)).all()
+                            
+                            # Run post-sync validation
+                            post_validation_summary = deep_validator.post_sync_validate(synced_notes)
+                            if sync_log:
+                                sync_log.set_post_validation(post_validation_summary)
+                            
+                            # Log validation result
+                            incomplete_count = post_validation_summary.get('incomplete_count', 0)
+                            completeness_rate = post_validation_summary.get('completeness_rate', 100)
+                            
+                            if incomplete_count > 0:
+                                sync_log_broadcaster.warn(
+                                    f"同步完成，但有 {incomplete_count} 条笔记数据不完整 (完整率: {completeness_rate}%)",
+                                    account_id=acc_id,
+                                    account_name=account_name,
+                                    extra={
+                                        'incomplete_count': incomplete_count,
+                                        'completeness_rate': completeness_rate,
+                                    }
+                                )
+                            else:
+                                sync_log_broadcaster.info(
+                                    f"数据完整性验证通过 (完整率: {completeness_rate}%)",
+                                    account_id=acc_id,
+                                    account_name=account_name
+                                )
+                        except Exception as val_err:
+                            logger.warning(f"Post-sync validation failed: {val_err}")
                     
                     if sync_log:
                         logs_data = sync_log.finalize()
@@ -1337,224 +1273,55 @@ class SyncService:
     ) -> Tuple[int, int]:
         """Bulk save notes to database.
         
+        Delegates to NotePersistenceService for unified persistence logic.
+        
         Args:
             notes_data_list: List of note data dictionaries
-            existing_note_ids: Set of existing note IDs
+            existing_note_ids: Set of existing note IDs (deprecated, use existing_notes_cache)
             existing_notes_cache: Cache of existing Note objects
         
         Returns:
             Tuple of (inserted_count, updated_count)
         """
-        if not notes_data_list:
-            return 0, 0
+        def cover_callback(cover_url: str, note_id: str):
+            """Submit cover download to async queue."""
+            queue = get_media_download_queue()
+            queue.submit_cover_download(cover_url, note_id, callback=SyncService._update_cover_local)
         
-        try:
-            # Pre-fetch existing notes if not provided
-            if existing_note_ids is None or existing_notes_cache is None:
-                note_ids = [n.get('note_id') for n in notes_data_list if n.get('note_id')]
-                existing_notes = Note.query.filter(Note.note_id.in_(note_ids)).all()
-                existing_note_ids = {n.note_id for n in existing_notes}
-                existing_notes_cache = {n.note_id: n for n in existing_notes}
-            
-            insert_mappings = []
-            update_count = 0
-            now = datetime.utcnow()
-            cover_tasks = []
-            
-            for note_data in notes_data_list:
-                note_id = note_data.get('note_id')
-                if not note_id:
-                    continue
-                
-                # Calculate cover URL
-                cover_remote = note_data.get('cover_remote') or note_data.get('video_cover')
-                if not cover_remote:
-                    imgs = note_data.get('image_list') or []
-                    cover_remote = imgs[0] if imgs else None
-                
-                if cover_remote:
-                    cover_tasks.append((cover_remote, note_id))
-                
-                if note_id in existing_note_ids:
-                    # Update existing
-                    note = existing_notes_cache.get(note_id)
-                    if note:
-                        note.nickname = note_data['nickname']
-                        note.avatar = note_data['avatar']
-                        note.title = note_data['title']
-                        if note_data['desc']:
-                            note.desc = note_data['desc']
-                        note.type = note_data['note_type']
-                        
-                        if note_data['liked_count'] is not None:
-                            note.liked_count = note_data['liked_count']
-                        if note_data['collected_count'] is not None:
-                            note.collected_count = note_data['collected_count']
-                        if note_data['comment_count'] is not None:
-                            note.comment_count = note_data['comment_count']
-                        if note_data['share_count'] is not None:
-                            note.share_count = note_data['share_count']
-                        if note_data['upload_time']:
-                            note.upload_time = note_data['upload_time']
-                        if note_data['video_addr']:
-                            note.video_addr = note_data['video_addr']
-                        if note_data['image_list']:
-                            new_count = len(note_data['image_list'])
-                            old_list = json.loads(note.image_list) if note.image_list else []
-                            if new_count > len(old_list) or len(old_list) <= 1:
-                                note.image_list = json.dumps(note_data['image_list'])
-                        if note_data['tags']:
-                            note.tags = json.dumps(note_data['tags'])
-                        if note_data['ip_location']:
-                            note.ip_location = note_data['ip_location']
-                        if cover_remote:
-                            note.cover_remote = cover_remote
-                        if note_data.get('xsec_token'):
-                            note.xsec_token = note_data['xsec_token']
-                        note.last_updated = now
-                        update_count += 1
-                else:
-                    # Insert new - parse count values (may be strings like "1.1万")
-                    mapping = {
-                        'note_id': note_id,
-                        'user_id': note_data['user_id'],
-                        'nickname': note_data['nickname'],
-                        'avatar': note_data['avatar'],
-                        'title': note_data['title'],
-                        'desc': note_data['desc'] or '',
-                        'type': note_data['note_type'],
-                        'liked_count': SyncService._parse_count(note_data['liked_count']) or 0,
-                        'collected_count': SyncService._parse_count(note_data['collected_count']) or 0,
-                        'comment_count': SyncService._parse_count(note_data['comment_count']) or 0,
-                        'share_count': SyncService._parse_count(note_data['share_count']) or 0,
-                        'upload_time': note_data['upload_time'] or '',
-                        'video_addr': note_data['video_addr'] or '',
-                        'image_list': json.dumps(note_data['image_list']) if note_data['image_list'] else '[]',
-                        'tags': json.dumps(note_data['tags']) if note_data['tags'] else '[]',
-                        'ip_location': note_data['ip_location'] or '',
-                        'cover_remote': cover_remote or '',
-                        'cover_local': '',
-                        'xsec_token': note_data.get('xsec_token') or '',
-                        'last_updated': now,
-                    }
-                    insert_mappings.append(mapping)
-            
-            if insert_mappings:
-                db.session.bulk_insert_mappings(Note, insert_mappings)
-            
-            db.session.commit()
-            
-            # Submit cover downloads to async queue
-            if cover_tasks:
-                queue = get_media_download_queue()
-                for cover_url, nid in cover_tasks:
-                    queue.submit_cover_download(cover_url, nid, callback=SyncService._update_cover_local)
-            
-            return len(insert_mappings), update_count
-            
-        except Exception as e:
-            db.session.rollback()
-            logger.error(f"[BulkSave] Failed: {e}")
-            raise
+        return NotePersistenceService.bulk_save(
+            notes_data=notes_data_list,
+            existing_cache=existing_notes_cache,
+            cover_callback=cover_callback
+        )
     
     @staticmethod
     def _save_note(note_data: Dict, download_media: bool = False, auto_commit: bool = True) -> None:
         """Save a single note to database.
+        
+        Delegates to NotePersistenceService for unified persistence logic.
         
         Args:
             note_data: Note data dictionary
             download_media: Whether to download media files
             auto_commit: Whether to auto-commit transaction
         """
-        try:
-            note_id = note_data.get('note_id')
-            if not note_id:
-                logger.debug(f"Skipping note save: note_id is empty")
-                return
-
-            # Calculate cover
-            cover_remote = note_data.get('cover_remote') or note_data.get('video_cover')
-            if not cover_remote:
-                imgs = note_data.get('image_list') or []
-                cover_remote = imgs[0] if imgs else None
-            
-            note = Note.query.filter_by(note_id=note_id).first()
-            
-            if note:
-                # Update existing
-                note.nickname = note_data['nickname']
-                note.avatar = note_data['avatar']
-                note.title = note_data['title']
-                if note_data['desc']:
-                    note.desc = note_data['desc']
-                note.type = note_data['note_type']
-                
-                # Parse count values (may be strings like "1.1万")
-                if note_data['liked_count'] is not None:
-                    note.liked_count = SyncService._parse_count(note_data['liked_count'])
-                if note_data['collected_count'] is not None:
-                    note.collected_count = SyncService._parse_count(note_data['collected_count'])
-                if note_data['comment_count'] is not None:
-                    note.comment_count = SyncService._parse_count(note_data['comment_count'])
-                if note_data['share_count'] is not None:
-                    note.share_count = SyncService._parse_count(note_data['share_count'])
-                if note_data['upload_time']:
-                    note.upload_time = note_data['upload_time']
-                if note_data['video_addr']:
-                    note.video_addr = note_data['video_addr']
-                if note_data['image_list']:
-                    new_count = len(note_data['image_list'])
-                    old_list = json.loads(note.image_list) if note.image_list else []
-                    if new_count > len(old_list) or len(old_list) <= 1:
-                        note.image_list = json.dumps(note_data['image_list'])
-                if note_data['tags']:
-                    note.tags = json.dumps(note_data['tags'])
-                if note_data['ip_location']:
-                    note.ip_location = note_data['ip_location']
-                if cover_remote:
-                    note.cover_remote = cover_remote
-                if note_data.get('xsec_token'):
-                    note.xsec_token = note_data['xsec_token']
-                note.last_updated = datetime.utcnow()
-            else:
-                # Create new - parse count values (may be strings like "1.1万")
-                note = Note(
-                    note_id=note_id,
-                    user_id=note_data['user_id'],
-                    nickname=note_data['nickname'],
-                    avatar=note_data['avatar'],
-                    title=note_data['title'],
-                    desc=note_data['desc'] or '',
-                    type=note_data['note_type'],
-                    liked_count=SyncService._parse_count(note_data['liked_count']) or 0,
-                    collected_count=SyncService._parse_count(note_data['collected_count']) or 0,
-                    comment_count=SyncService._parse_count(note_data['comment_count']) or 0,
-                    share_count=SyncService._parse_count(note_data['share_count']) or 0,
-                    upload_time=note_data['upload_time'] or '',
-                    video_addr=note_data['video_addr'] or '',
-                    image_list=json.dumps(note_data['image_list']) if note_data['image_list'] else '[]',
-                    tags=json.dumps(note_data['tags']) if note_data['tags'] else '[]',
-                    ip_location=note_data['ip_location'] or '',
-                    cover_remote=cover_remote or '',
-                    cover_local='',
-                    xsec_token=note_data.get('xsec_token') or '',
-                )
-                db.session.add(note)
-            
-            if auto_commit:
-                db.session.commit()
-            
-            # Async media download
+        def cover_callback(cover_url: str, note_id: str):
+            """Submit cover download to async queue."""
             queue = get_media_download_queue()
-            if cover_remote:
-                queue.submit_cover_download(cover_remote, note_id, callback=SyncService._update_cover_local)
-            if download_media:
-                queue.submit_media_download(note_id, note_data)
-                
-        except Exception as e:
-            db.session.rollback()
-            logger.warning(f"Error saving note {note_data.get('note_id')}: {e}")
-            raise
+            queue.submit_cover_download(cover_url, note_id, callback=SyncService._update_cover_local)
+        
+        def media_callback(note_id: str, data: Dict):
+            """Submit media download to async queue."""
+            queue = get_media_download_queue()
+            queue.submit_media_download(note_id, data)
+        
+        NotePersistenceService.save_single(
+            note_data=note_data,
+            download_media=download_media,
+            auto_commit=auto_commit,
+            cover_callback=cover_callback,
+            media_callback=media_callback
+        )
     
     @staticmethod
     def _update_cover_local(note_id: str, local_path: str) -> None:

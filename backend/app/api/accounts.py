@@ -526,3 +526,210 @@ def reset_db():
         db.session.rollback()
         logger.error(f"清空数据库失败: {e}")
         return ApiResponse.server_error('清空数据库失败')
+
+
+@accounts_bp.route('/accounts/export', methods=['POST'])
+def export_accounts():
+    """
+    导出账号数据（包含关联的笔记数据）
+    
+    Request Body:
+        - ids: 账号ID数组（可选，为空则导出全部）
+        - include_notes: 是否包含笔记数据（默认 true）
+    
+    Returns:
+        {
+            accounts: [...],
+            notes: [...],
+            export_time: "2025-12-16T10:00:00",
+            version: "1.0"
+        }
+    """
+    from ..models import Note
+    from datetime import datetime
+    
+    data = request.json or {}
+    ids = data.get('ids', [])
+    include_notes = data.get('include_notes', True)
+    
+    try:
+        # 获取账号数据
+        if ids:
+            accounts = Account.query.filter(Account.id.in_(ids)).all()
+        else:
+            accounts = Account.query.all()
+        
+        accounts_data = [acc.to_dict() for acc in accounts]
+        
+        # 获取关联的笔记数据
+        notes_data = []
+        if include_notes and accounts:
+            user_ids = [acc.user_id for acc in accounts]
+            notes = Note.query.filter(Note.user_id.in_(user_ids)).all()
+            notes_data = [note.to_dict() for note in notes]
+        
+        result = {
+            'accounts': accounts_data,
+            'notes': notes_data,
+            'export_time': datetime.utcnow().isoformat() + 'Z',
+            'version': '1.0'
+        }
+        
+        logger.info(f"导出数据: {len(accounts_data)} 个账号, {len(notes_data)} 条笔记")
+        
+        return success_response(
+            data=result,
+            message=f'导出成功: {len(accounts_data)} 个账号, {len(notes_data)} 条笔记'
+        )
+    except Exception as e:
+        logger.error(f"导出数据失败: {e}")
+        return ApiResponse.server_error('导出数据失败')
+
+
+@accounts_bp.route('/accounts/import', methods=['POST'])
+def import_accounts():
+    """
+    导入账号数据（包含关联的笔记数据）
+    
+    Request Body:
+        {
+            accounts: [...],
+            notes: [...],  # 可选
+            version: "1.0"
+        }
+    
+    导入规则：
+        - 账号：如果 user_id 已存在则更新，否则新增
+        - 笔记：如果 note_id 已存在则用导入数据覆盖，否则新增
+    
+    Returns:
+        {
+            accounts_added: int,
+            accounts_updated: int,
+            notes_added: int,
+            notes_updated: int
+        }
+    """
+    from ..models import Note
+    import json
+    
+    data = request.json or {}
+    accounts_data = data.get('accounts', [])
+    notes_data = data.get('notes', [])
+    
+    if not accounts_data and not notes_data:
+        return ApiResponse.validation_error('导入数据为空')
+    
+    accounts_added = 0
+    accounts_updated = 0
+    notes_added = 0
+    notes_updated = 0
+    
+    try:
+        # 导入账号
+        for acc_data in accounts_data:
+            user_id = acc_data.get('user_id')
+            if not user_id:
+                continue
+            
+            existing = Account.query.filter_by(user_id=user_id).first()
+            if existing:
+                # 更新现有账号（不覆盖同步状态相关字段）
+                existing.name = acc_data.get('name') or existing.name
+                existing.avatar = acc_data.get('avatar') or existing.avatar
+                existing.red_id = acc_data.get('red_id') or existing.red_id
+                existing.desc = acc_data.get('desc') or existing.desc
+                existing.fans = acc_data.get('fans', existing.fans)
+                accounts_updated += 1
+            else:
+                # 新增账号
+                account = Account(
+                    user_id=user_id,
+                    name=acc_data.get('name') or user_id,
+                    avatar=acc_data.get('avatar'),
+                    red_id=acc_data.get('red_id'),
+                    desc=acc_data.get('desc'),
+                    fans=acc_data.get('fans', 0),
+                )
+                db.session.add(account)
+                accounts_added += 1
+        
+        db.session.flush()  # 确保账号先写入
+        
+        # 导入笔记
+        for note_data in notes_data:
+            note_id = note_data.get('note_id')
+            if not note_id:
+                continue
+            
+            existing = Note.query.get(note_id)
+            if existing:
+                # 更新现有笔记（用导入数据覆盖）
+                existing.user_id = note_data.get('user_id') or existing.user_id
+                existing.nickname = note_data.get('nickname') or existing.nickname
+                existing.avatar = note_data.get('avatar') or existing.avatar
+                existing.title = note_data.get('title') or existing.title
+                existing.desc = note_data.get('desc') or existing.desc
+                existing.type = note_data.get('type') or existing.type
+                existing.liked_count = note_data.get('liked_count', existing.liked_count)
+                existing.collected_count = note_data.get('collected_count', existing.collected_count)
+                existing.comment_count = note_data.get('comment_count', existing.comment_count)
+                existing.share_count = note_data.get('share_count', existing.share_count)
+                existing.upload_time = note_data.get('upload_time') or existing.upload_time
+                existing.video_addr = note_data.get('video_addr') or existing.video_addr
+                existing.ip_location = note_data.get('ip_location') or existing.ip_location
+                existing.cover_remote = note_data.get('cover_remote') or existing.cover_remote
+                existing.cover_local = note_data.get('cover_local') or existing.cover_local
+                existing.xsec_token = note_data.get('xsec_token') or existing.xsec_token
+                # 处理列表字段
+                if note_data.get('image_list'):
+                    existing.image_list = json.dumps(note_data['image_list']) if isinstance(note_data['image_list'], list) else note_data['image_list']
+                if note_data.get('tags'):
+                    existing.tags = json.dumps(note_data['tags']) if isinstance(note_data['tags'], list) else note_data['tags']
+                notes_updated += 1
+            else:
+                # 新增笔记
+                note = Note(
+                    note_id=note_id,
+                    user_id=note_data.get('user_id'),
+                    nickname=note_data.get('nickname'),
+                    avatar=note_data.get('avatar'),
+                    title=note_data.get('title'),
+                    desc=note_data.get('desc'),
+                    type=note_data.get('type'),
+                    liked_count=note_data.get('liked_count', 0),
+                    collected_count=note_data.get('collected_count', 0),
+                    comment_count=note_data.get('comment_count', 0),
+                    share_count=note_data.get('share_count', 0),
+                    upload_time=note_data.get('upload_time'),
+                    video_addr=note_data.get('video_addr'),
+                    ip_location=note_data.get('ip_location'),
+                    cover_remote=note_data.get('cover_remote'),
+                    cover_local=note_data.get('cover_local'),
+                    xsec_token=note_data.get('xsec_token'),
+                )
+                # 处理列表字段
+                if note_data.get('image_list'):
+                    note.image_list = json.dumps(note_data['image_list']) if isinstance(note_data['image_list'], list) else note_data['image_list']
+                if note_data.get('tags'):
+                    note.tags = json.dumps(note_data['tags']) if isinstance(note_data['tags'], list) else note_data['tags']
+                db.session.add(note)
+                notes_added += 1
+        
+        db.session.commit()
+        
+        logger.info(f"导入完成: 账号新增 {accounts_added}, 更新 {accounts_updated}; 笔记新增 {notes_added}, 更新 {notes_updated}")
+        
+        return success_response(
+            data={
+                'accounts_added': accounts_added,
+                'accounts_updated': accounts_updated,
+                'notes_added': notes_added,
+                'notes_updated': notes_updated
+            },
+            message=f'导入成功: 账号新增 {accounts_added} 更新 {accounts_updated}, 笔记新增 {notes_added} 更新 {notes_updated}'
+        )
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"导入数据失败: {e}")
+        return ApiResponse.server_error(f'导入数据失败: {str(e)}')

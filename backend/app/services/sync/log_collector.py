@@ -44,6 +44,16 @@ class SyncLogCollector:
     TYPE_MEDIA_FAILED = 'media_failed'       # Media download failure
     TYPE_AUTH_ERROR = 'auth_error'           # Authentication error
     
+    # Sync mode constants
+    SYNC_MODE_FAST = 'fast'                  # 急速同步
+    SYNC_MODE_DEEP = 'deep'                  # 深度同步
+    
+    # Sync mode display names
+    SYNC_MODE_NAMES = {
+        'fast': '急速同步',
+        'deep': '深度同步',
+    }
+    
     # Maximum issues to store (prevent memory bloat)
     MAX_ISSUES = 500
     
@@ -74,6 +84,9 @@ class SyncLogCollector:
             'media_failed': 0,    # Media download failures
             'skipped': 0,         # Skipped (already complete)
         }
+        # Pre/Post validation results
+        self.pre_validation: Optional[Dict] = None
+        self.post_validation: Optional[Dict] = None
         # Track which notes have been counted for each issue type (avoid duplicate counting)
         self._counted_notes: Dict[str, set] = {
             self.TYPE_RATE_LIMITED: set(),
@@ -183,6 +196,24 @@ class SyncLogCollector:
         with self._lock:
             self.summary['skipped'] += 1
     
+    def set_pre_validation(self, validation_result: Dict) -> None:
+        """Set pre-sync validation result.
+        
+        Args:
+            validation_result: Validation summary from NoteValidator
+        """
+        with self._lock:
+            self.pre_validation = validation_result
+    
+    def set_post_validation(self, validation_result: Dict) -> None:
+        """Set post-sync validation result.
+        
+        Args:
+            validation_result: Validation summary from NoteValidator
+        """
+        with self._lock:
+            self.post_validation = validation_result
+    
     def set_total(self, total: int) -> None:
         """Set the total note count.
         
@@ -266,13 +297,23 @@ class SyncLogCollector:
                     f"Difference: {total - calculated_total}"
                 )
             
-            return {
+            # Build final log data
+            log_data = {
                 'sync_mode': self.sync_mode,
+                'sync_mode_name': self.SYNC_MODE_NAMES.get(self.sync_mode, self.sync_mode),
                 'start_time': self.start_time,
                 'end_time': self.end_time,
                 'summary': summary,
                 'issues': filtered_issues,  # Use filtered issues
             }
+            
+            # Add validation results if available
+            if self.pre_validation:
+                log_data['pre_validation'] = self.pre_validation
+            if self.post_validation:
+                log_data['post_validation'] = self.post_validation
+            
+            return log_data
     
     def save_to_db(self) -> bool:
         """Save logs to database.

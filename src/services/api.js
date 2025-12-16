@@ -266,6 +266,22 @@ export const accountApi = {
    * 清空数据库（需要管理员权限）
    */
   reset: () => api.post('/reset', {}, true),
+
+  /**
+   * 导出账号数据（包含关联笔记）
+   * @param {array} ids - 账号ID列表（可选，为空则导出全部）
+   * @param {boolean} includeNotes - 是否包含笔记数据，默认 true
+   */
+  export: (ids = [], includeNotes = true) => api.post('/accounts/export', { 
+    ids, 
+    include_notes: includeNotes 
+  }),
+
+  /**
+   * 导入账号数据（包含关联笔记）
+   * @param {object} data - 导入数据 { accounts: [], notes: [] }
+   */
+  import: (data) => api.post('/accounts/import', data),
 };
 
 // ==================== 笔记相关 API ====================

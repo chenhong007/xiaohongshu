@@ -123,6 +123,23 @@ export const SyncLogModal = ({ isOpen, onClose, account }) => {
   useEffect(() => {
     if (!isOpen || !account?.id) return;
     
+    // 计算问题数，如果为0则无需请求问题列表
+    const logs = account.sync_logs;
+    const summary = logs?.summary || {};
+    const problemCount = summary.unique_problem_notes ?? 
+      Math.min(
+        (summary.rate_limited || 0) + (summary.missing_field || 0) + (summary.fetch_failed || 0) + (summary.unavailable || 0),
+        summary.total || 0
+      );
+    
+    // 没有问题时，直接设置为空，不发起请求
+    if (problemCount === 0) {
+      setIssues([]);
+      setTotalIssues(0);
+      setIssuesLoading(false);
+      return;
+    }
+    
     const fetchIssues = async () => {
       setIssuesLoading(true);
       try {
@@ -144,7 +161,7 @@ export const SyncLogModal = ({ isOpen, onClose, account }) => {
     };
     
     fetchIssues();
-  }, [isOpen, account?.id]);
+  }, [isOpen, account?.id, account?.sync_logs]);
   
   if (!isOpen || !account) return null;
   const logs = account.sync_logs;

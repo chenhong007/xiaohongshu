@@ -5,6 +5,7 @@ This module exports core services and sync utilities.
 """
 from .sync_service import SyncService
 from .sync_log_broadcaster import sync_log_broadcaster
+from .cookie_service import CookieService
 
 # Export refactored sync modules for direct access
 from .sync.delay_manager import AdaptiveDelayManager, get_adaptive_delay_manager
@@ -15,6 +16,7 @@ from .sync.media_queue import MediaDownloadQueue, get_media_download_queue
 __all__ = [
     'SyncService',
     'sync_log_broadcaster',
+    'CookieService',
     'AdaptiveDelayManager',
     'get_adaptive_delay_manager',
     'RequestSessionPool',
