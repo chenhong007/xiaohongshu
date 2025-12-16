@@ -200,9 +200,29 @@ class SyncLogCollector:
             return self.summary['new_notes']
     
     def record_skipped(self) -> None:
-        """Record a skipped note (already has complete data)."""
+        """Record a skipped note (already has complete data, within processing loop)."""
         with self._lock:
             self.summary['skipped'] += 1
+    
+    def record_excluded(self, count: int = 1) -> None:
+        """Record excluded notes (>7 days and data complete, not counted in need_sync).
+        
+        Args:
+            count: Number of excluded notes
+        """
+        if count <= 0:
+            return
+        with self._lock:
+            self.summary['excluded'] += count
+    
+    def set_need_sync(self, need_sync: int) -> None:
+        """Set the count of notes that actually need to sync.
+        
+        Args:
+            need_sync: Number of notes that need to be synced (total - excluded)
+        """
+        with self._lock:
+            self.summary['need_sync'] = need_sync
     
     def set_pre_validation(self, validation_result: Dict) -> None:
         """Set pre-sync validation result.
