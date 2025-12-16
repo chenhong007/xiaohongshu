@@ -26,6 +26,7 @@
 #   backup     - 备份数据
 #   verify     - 验证镜像代码版本
 #   clean      - 清理无用的 Docker 资源
+#   clean-cache- 清理 Python 缓存文件（__pycache__、.pyc 等）
 #   rollback   - 回滚到上一个版本
 #
 # ============================================================
@@ -263,9 +264,46 @@ check_git_clean() {
     return 0  # 干净的工作区
 }
 
+# 清理 Python 缓存文件（__pycache__ 和 .pyc）
+clean_python_cache() {
+    log_info "清理 Python 缓存文件..."
+    
+    cd "$PROJECT_DIR"
+    
+    # 删除所有 __pycache__ 目录
+    local pycache_count=$(find . -type d -name "__pycache__" 2>/dev/null | wc -l)
+    if [ "$pycache_count" -gt 0 ]; then
+        find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+        log_info "  已删除 ${pycache_count} 个 __pycache__ 目录"
+    fi
+    
+    # 删除所有 .pyc 文件
+    local pyc_count=$(find . -type f -name "*.pyc" 2>/dev/null | wc -l)
+    if [ "$pyc_count" -gt 0 ]; then
+        find . -type f -name "*.pyc" -delete 2>/dev/null || true
+        log_info "  已删除 ${pyc_count} 个 .pyc 文件"
+    fi
+    
+    # 删除所有 .pyo 文件（Python 优化字节码）
+    local pyo_count=$(find . -type f -name "*.pyo" 2>/dev/null | wc -l)
+    if [ "$pyo_count" -gt 0 ]; then
+        find . -type f -name "*.pyo" -delete 2>/dev/null || true
+        log_info "  已删除 ${pyo_count} 个 .pyo 文件"
+    fi
+    
+    if [ "$pycache_count" -eq 0 ] && [ "$pyc_count" -eq 0 ] && [ "$pyo_count" -eq 0 ]; then
+        log_info "  无需清理，未发现 Python 缓存文件"
+    else
+        log_info "✅ Python 缓存清理完成"
+    fi
+}
+
 # 自动提交并推送本地更改
 auto_commit_push() {
     if [ -d ".git" ]; then
+        # 提交前先清理 Python 缓存文件，避免同步到远程仓库
+        clean_python_cache
+        
         if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
             log_warn "检测到未提交的本地更改，正在自动提交..."
             
@@ -998,6 +1036,7 @@ show_help() {
     echo -e "  ${GREEN}rollback${NC}     回滚到上一个版本"
     echo -e "  ${GREEN}verify${NC}       验证镜像代码版本是否与 Git 一致"
     echo -e "  ${GREEN}clean${NC}        清理无用的 Docker 资源"
+    echo -e "  ${GREEN}clean-cache${NC}  清理 Python 缓存文件（__pycache__、.pyc 等）"
     echo -e "  ${GREEN}shell${NC}        进入后端容器"
     echo -e "  ${GREEN}help${NC}         显示此帮助信息"
     echo ""
@@ -1058,6 +1097,11 @@ main() {
             ;;
         verify)
             cmd_verify
+            ;;
+        clean-cache)
+            log_step "🧹 清理 Python 缓存文件"
+            clean_python_cache
+            log_info "✅ 清理完成"
             ;;
         ssl-init)
             cmd_ssl_init

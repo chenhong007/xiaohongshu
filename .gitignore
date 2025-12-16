@@ -2,8 +2,18 @@ node_modules
 XHS-Downloader
 Spider_XHS
 backend/xhs_data.db
-*.pyc
+
+# Python 缓存文件 - 禁止同步到远程仓库
 __pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
 *.log
 # 部署版本记录（本地状态）
 .deploy_version

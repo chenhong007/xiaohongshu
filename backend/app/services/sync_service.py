@@ -41,6 +41,10 @@ from .sync.note_persistence import NotePersistenceService
 from .sync.state_manager import SyncStateManager, batch_mark_failed
 from .sync.token_manager import XsecTokenManager
 from .sync.note_converter import NoteDataConverter
+from .sync.note_fetcher import NoteFetcher, FetchResult
+from .sync.retry_handler import ApiRetryHandler, ErrorType
+from .sync.auth_handler import AuthErrorHandler, TokenRetryHelper
+from .sync.progress_tracker import ProgressTracker, NoteProcessingHelper
 
 # Spider_XHS imports
 try:
@@ -349,6 +353,37 @@ class SyncService:
         return missing_fields
     
     @staticmethod
+    def _get_fallback_missing_fields(existing_note: Optional[Note]) -> List[str]:
+        """Get list of fields that will be missing when falling back to list API data.
+        
+        Used to log which fields are missing when detail API fails and we have to
+        use list API data as fallback.
+        
+        Args:
+            existing_note: Existing note from database (may be None for new notes)
+            
+        Returns:
+            List of missing field names
+        """
+        missing_fields = []
+        
+        # upload_time: 列表API永远不返回此字段
+        if not existing_note or not existing_note.upload_time:
+            missing_fields.append('upload_time')
+        # desc: 列表API可能返回空或截断的内容
+        if not existing_note or not existing_note.desc:
+            missing_fields.append('desc')
+        # 互动数据: 列表API可能不返回所有计数
+        if not existing_note or existing_note.collected_count is None:
+            missing_fields.append('collected_count')
+        if not existing_note or existing_note.comment_count is None:
+            missing_fields.append('comment_count')
+        if not existing_note or existing_note.share_count is None:
+            missing_fields.append('share_count')
+        
+        return missing_fields
+    
+    @staticmethod
     def _is_note_data_complete(note: Note) -> bool:
         """Check if note has complete data from detail API.
         
@@ -375,83 +410,21 @@ class SyncService:
 
     @staticmethod
     def _handle_auth_error(msg: str) -> bool:
-        """Check if error is auth-related and mark Cookie as invalid."""
-        auth_errors = ['未登录', '登录已过期', '需要登录', '401', '403', 'Unauthorized', '凭据不合法', '凭据无效', '10062']
-        if any(error in str(msg) for error in auth_errors):
-            logger.warning(f"Detected auth error: {msg}, marking Cookie as invalid...")
-            try:
-                cookie = Cookie.query.filter_by(is_active=True).first()
-                if cookie:
-                    cookie.stop_run_timer()
-                    cookie.is_valid = False
-                    cookie.last_checked = datetime.utcnow()
-                    db.session.commit()
-                    logger.info("Cookie marked as invalid")
-                    
-                    # Broadcast cookie invalid status to frontend
-                    sync_log_broadcaster.broadcast_cookie_status(
-                        status='invalid',
-                        message=f'Cookie 已失效: {msg}',
-                        extra={
-                            'user_id': cookie.user_id,
-                            'nickname': cookie.nickname,
-                            'run_info': cookie.get_run_info(),
-                        }
-                    )
-                return True
-            except Exception as e:
-                logger.error(f"Error marking Cookie as invalid: {e}")
-        return False
+        """Check if error is auth-related and mark Cookie as invalid.
+        
+        Note: This is a wrapper around AuthErrorHandler for backward compatibility.
+        """
+        is_auth, _ = AuthErrorHandler.handle_auth_error(msg)
+        return is_auth
 
     @staticmethod
     def _is_xsec_token_error(msg: str) -> bool:
-        """Check if error is xsec_token related."""
-        if not msg:
-            return False
-        tokens = ['xsec', '签名', 'token', '参数错误', 'invalid signature']
-        msg_lower = str(msg).lower()
-        return any(keyword in msg_lower for keyword in tokens)
-
-    @staticmethod
-    def _fetch_user_xsec_token(user_id: str, xhs_apis, cookie_str: str) -> str:
-        """Dynamically fetch user's xsec_token via search."""
-        if not user_id or not SPIDER_AVAILABLE:
-            return ''
-        try:
-            # Get user info for nickname
-            success_info, msg_info, user_info = xhs_apis.get_user_info(user_id, cookie_str)
-            if not success_info or not user_info:
-                logger.debug(f"Failed to get user info for {user_id}: {msg_info}")
-                return ''
-            
-            basic_info = user_info.get('data', {}).get('basic_info', {})
-            nickname = basic_info.get('nickname', '')
-            
-            if not nickname:
-                logger.debug(f"No nickname found for user {user_id}")
-                return ''
-            
-            # Search user by nickname to get xsec_token
-            success_search, msg_search, search_res = xhs_apis.search_user(nickname, cookie_str, page=1)
-            if not success_search or not search_res:
-                logger.debug(f"Failed to search user '{nickname}': {msg_search}")
-                return ''
-            
-            # Match user_id in search results
-            users = search_res.get('data', {}).get('users', [])
-            for user in users:
-                found_user_id = (user.get('user_id') or user.get('id') or 
-                                user.get('userid') or user.get('userId'))
-                if found_user_id == user_id:
-                    xsec_token = user.get('xsec_token', '')
-                    if xsec_token:
-                        logger.debug(f"Fetched xsec_token for user {user_id} via search")
-                        return xsec_token
-            
-            logger.debug(f"User {user_id} not found in search results")
-        except Exception as e:
-            logger.debug(f"Exception fetching xsec_token for user {user_id}: {e}")
-        return ''
+        """Check if error is xsec_token related.
+        
+        Note: This is a wrapper for backward compatibility.
+        Prefer using XsecTokenManager.is_token_error() or ApiRetryHandler.is_token_error().
+        """
+        return XsecTokenManager.is_token_error(msg)
 
     @staticmethod
     def _sleep_with_jitter(sync_mode: str) -> None:
@@ -633,43 +606,56 @@ class SyncService:
                         db.session.commit()
                         continue
                 
-                # Get all notes
-                success, msg, all_note_info = xhs_apis.get_user_all_notes(user_url, cookie_str)
+                # Get all notes with automatic token refresh on error
+                def make_api_call():
+                    nonlocal user_url, xsec_token
+                    return xhs_apis.get_user_all_notes(user_url, cookie_str)
                 
-                # Retry with refreshed token if needed (使用 token_mgr 的 refresh 方法)
-                if not success and sync_mode == 'deep' and XsecTokenManager.is_token_error(msg):
-                    new_token = token_mgr.refresh_user_token(account.user_id)
-                    if new_token and new_token != xsec_token:
-                        xsec_token = new_token
-                        user_url = token_mgr.build_user_url(account.user_id, xsec_token)
-                        success, msg, all_note_info = xhs_apis.get_user_all_notes(user_url, cookie_str)
+                def on_token_refreshed(new_token):
+                    nonlocal user_url, xsec_token
+                    xsec_token = new_token
+                    user_url = token_mgr.build_user_url(account.user_id, xsec_token)
                 
-                # Retry if empty list
+                # First attempt with token refresh on error
+                success, msg, all_note_info = TokenRetryHelper.retry_with_token_refresh(
+                    api_call=make_api_call,
+                    token_manager=token_mgr,
+                    user_id=account.user_id,
+                    should_refresh=lambda s, m: not s and sync_mode == 'deep' and XsecTokenManager.is_token_error(m),
+                    on_token_refreshed=on_token_refreshed
+                )
+                
+                # Retry if empty list (token might be stale)
                 if success and not all_note_info:
                     logger.debug(f"Got 0 notes for {account.user_id}, refreshing token...")
-                    new_token = SyncService._fetch_user_xsec_token(account.user_id, xhs_apis, cookie_str)
-                    if new_token and new_token != xsec_token:
-                        xsec_token = new_token
-                        user_url = token_mgr.build_user_url(account.user_id, xsec_token)
-                        success_retry, msg_retry, all_note_info_retry = xhs_apis.get_user_all_notes(user_url, cookie_str)
-                        if success_retry and all_note_info_retry:
-                            success, msg, all_note_info = success_retry, msg_retry, all_note_info_retry
+                    success, msg, all_note_info = TokenRetryHelper.retry_with_token_refresh(
+                        api_call=make_api_call,
+                        token_manager=token_mgr,
+                        user_id=account.user_id,
+                        should_refresh=lambda s, m: s and not all_note_info,
+                        on_token_refreshed=on_token_refreshed
+                    )
 
                 if not success:
-                    if SyncService._handle_auth_error(msg):
-                        error_msg = f"Cookie expired, please re-login. Error: {msg}"
-                        auth_error_msg = error_msg
-                        SyncService.stop_sync()
-                        SyncService._mark_accounts_failed(remaining_ids, error_msg)
-                    else:
+                    # Use unified auth error handler
+                    is_auth, auth_error_msg = AuthErrorHandler.handle_account_auth_error(
+                        account=account,
+                        msg=msg,
+                        stop_callback=SyncService.stop_sync,
+                        mark_failed_callback=SyncService._mark_accounts_failed,
+                        remaining_account_ids=remaining_ids
+                    )
+                    
+                    if not is_auth:
+                        # Non-auth error
                         error_msg = f"Failed to get notes: {msg}"
-
-                    if warning_msg:
-                        error_msg = f"{warning_msg}. {error_msg}"
-                    logger.warning(f"Failed to get notes for {account.user_id}: {msg}")
-                    account.status = 'failed'
-                    account.error_message = error_msg
-                    db.session.commit()
+                        if warning_msg:
+                            error_msg = f"{warning_msg}. {error_msg}"
+                        logger.warning(f"Failed to get notes for {account.user_id}: {msg}")
+                        account.status = 'failed'
+                        account.error_message = error_msg
+                        db.session.commit()
+                    
                     if auth_error_msg:
                         break
                     continue
@@ -691,10 +677,17 @@ class SyncService:
                 try:
                     success_info, msg_info, user_info_res = xhs_apis.get_user_info(account.user_id, cookie_str)
                     
-                    if not success_info and SyncService._handle_auth_error(msg_info):
-                        auth_error_msg = f"Cookie expired. Error: {msg_info}"
-                        SyncService.stop_sync()
-                        SyncService._mark_accounts_failed(remaining_ids, auth_error_msg)
+                    # Check for auth error
+                    if not success_info:
+                        is_auth, auth_error_msg = AuthErrorHandler.handle_account_auth_error(
+                            account=account,
+                            msg=msg_info,
+                            stop_callback=SyncService.stop_sync,
+                            mark_failed_callback=SyncService._mark_accounts_failed,
+                            remaining_account_ids=remaining_ids
+                        )
+                        if is_auth:
+                            break
                     
                     if success_info and user_info_res and user_info_res.get('data'):
                         user_data = user_info_res['data']
@@ -785,6 +778,8 @@ class SyncService:
                 if sync_log:
                     sync_log.set_total(total)
                 
+                # Initialize progress tracker
+                progress_tracker = ProgressTracker(account, total, commit_interval=5)
                 
                 # Batch buffer for fast sync
                 FAST_SYNC_BATCH_SIZE = 20
@@ -802,52 +797,47 @@ class SyncService:
                         logger.warning(f"Note {note_id} missing xsec_token")
                         note_url = f"https://www.xiaohongshu.com/explore/{note_id}"
                     
-                    need_fetch_detail = False
+                    # Determine if detail fetch is needed (using helper)
+                    existing_note = existing_notes_cache.get(note_id)
+                    need_fetch_detail, fetch_reasons = NoteProcessingHelper.should_fetch_detail(
+                        sync_mode=sync_mode,
+                        existing_note=existing_note,
+                        validator=NoteValidator
+                    )
                     
-                    if sync_mode == 'deep':
-                        # 笔记已经在预处理阶段过滤过了，这里只需要判断是否需要获取详情
-                        existing_note = existing_notes_cache.get(note_id)
-                        if not existing_note:
-                            # 新笔记：需要获取详情
-                            need_fetch_detail = True
-                        else:
-                            # 使用 NoteValidator 判断是否需要获取详情
-                            needs_sync, reasons = NoteValidator.needs_deep_sync(existing_note)
-                            if needs_sync:
-                                need_fetch_detail = True
-                                logger.debug(f"Note {note_id} needs detail fetch: {', '.join(reasons)}")
+                    if need_fetch_detail and fetch_reasons:
+                        logger.debug(f"Note {note_id} needs detail fetch: {', '.join(fetch_reasons)}")
 
                     if not need_fetch_detail:
-                        # Quick update from list data
+                        # Quick update from list data (using helper)
                         try:
                             if note_xsec_token:
                                 simple_note['xsec_token'] = note_xsec_token
-                            # Get existing note for preserving fields that list API doesn't provide
-                            existing_note = existing_notes_cache.get(note_id)
-                            # Use NoteDataConverter for unified list API data conversion
-                            # Pass existing_note to preserve fields like upload_time, desc, etc.
-                            cleaned_data = NoteDataConverter.convert_from_list_api(
-                                simple_note, 
+                            
+                            # Process quick update
+                            cleaned_data = NoteProcessingHelper.process_quick_update(
+                                note_data=simple_note,
+                                existing_note=existing_note,
                                 user_id=account.user_id,
-                                existing_note=existing_note
+                                sync_mode=sync_mode
                             )
                             
                             if sync_mode == 'deep':
                                 if existing_note:
-                                    # 已存在的笔记，只更新点赞数（其他字段已在 NoteDataConverter 中保留）
-                                    if cleaned_data['liked_count'] is not None:
-                                        existing_note.liked_count = cleaned_data['liked_count']
-                                    existing_note.last_updated = datetime.utcnow()
+                                    # Update existing note with list data
+                                    NoteProcessingHelper.update_existing_note_from_list(
+                                        existing_note=existing_note,
+                                        cleaned_data=cleaned_data
+                                    )
                                     if sync_log:
                                         sync_log.record_skipped()
                                 else:
-                                    # 修复：新笔记需要保存并记录为成功
-                                    # 注意：新笔记通过列表API保存时，upload_time等字段会缺失
-                                    # 这种情况下笔记会被标记为需要深度同步
+                                    # New note: save with list data (incomplete but better than nothing)
                                     SyncService._save_note(cleaned_data, download_media=False, auto_commit=False)
                                     if sync_log:
                                         sync_log.record_success(note_id, is_new=True)
                             else:
+                                # Fast sync: batch save
                                 fast_sync_batch.append(cleaned_data)
                                 
                                 if len(fast_sync_batch) >= FAST_SYNC_BATCH_SIZE:
@@ -867,228 +857,79 @@ class SyncService:
                         except Exception as e:
                             logger.warning(f"Error quick updating note {note_id}: {e}")
                     else:
-                        # Fetch detail for deep sync
-                        detail_saved = False
-                        rate_limited = False
-                        last_error_msg = None
-                        
-                        for retry_attempt in range(3):
-                            if retry_attempt > 0:
-                                wait_time = random.uniform(3, 6) * retry_attempt
-                                time.sleep(wait_time)
-                            
-                            success, msg, note_info = data_spider.spider_note(note_url, cookie_str)
-                            last_error_msg = msg
-                            
-                            is_rate_limited = '频次异常' in str(msg) or '频繁操作' in str(msg)
-                            is_unavailable = '暂时无法浏览' in str(msg) or '笔记不存在' in str(msg)
-                            
-                            if is_rate_limited:
-                                rate_limited = True
-                                SyncService._record_rate_limit()
-                                sync_log_broadcaster.warn(
-                                    f"Rate limited, retrying ({retry_attempt + 1}/3)",
-                                    account_id=acc_id,
-                                    account_name=account_name,
-                                    note_id=note_id
+                        # Fetch detail for deep sync using NoteFetcher
+                        # 定义认证错误回调（用于处理 Cookie 失效）
+                        def handle_auth_error_callback(msg: str):
+                            nonlocal auth_error_msg
+                            auth_error_msg = f"Cookie expired. Error: {msg}"
+                            if sync_log:
+                                sync_log.add_issue(
+                                    SyncLogCollector.TYPE_AUTH_ERROR,
+                                    note_id=note_id,
+                                    message=str(msg)
                                 )
+                                sync_log.save_to_db()
+                            SyncService.stop_sync()
+                            account.status = 'failed'
+                            account.error_message = auth_error_msg
+                            db.session.commit()
+                            SyncService._mark_accounts_failed(remaining_ids, auth_error_msg)
+                        
+                        # 定义频率限制回调
+                        def handle_rate_limit_callback():
+                            SyncService._record_rate_limit()
+                            sync_log_broadcaster.warn(
+                                f"Rate limited",
+                                account_id=acc_id,
+                                account_name=account_name,
+                                note_id=note_id
+                            )
+                        
+                        # 使用 NoteFetcher 获取详情（统一的重试和 fallback 逻辑）
+                        note_fetcher = NoteFetcher(
+                            data_spider=data_spider,
+                            token_manager=token_mgr,
+                            cookie_str=cookie_str,
+                            sync_log=sync_log,
+                            on_auth_error=handle_auth_error_callback,
+                            on_rate_limit=handle_rate_limit_callback
+                        )
+                        
+                        fetch_result = note_fetcher.fetch_note_detail(
+                            note_id=note_id,
+                            note_token=note_xsec_token,
+                            user_id=account.user_id
+                        )
+                        
+                        detail_saved = False
+                        
+                        # 处理获取结果
+                        if fetch_result.success and fetch_result.note_data:
+                            try:
+                                note_info = fetch_result.note_data
+                                note_info['xsec_token'] = note_xsec_token
+                                is_new_note = note_id not in existing_note_ids_cache
+                                SyncService._save_note(note_info, download_media=True, auto_commit=False)
+                                detail_saved = True
+                                SyncService._record_success()
+                                if sync_log:
+                                    sync_log.record_success(note_id, is_new=is_new_note)
+                            except Exception as e:
+                                logger.warning(f"Error saving note {note_id}: {e}")
                                 if sync_log:
                                     sync_log.add_issue(
-                                        SyncLogCollector.TYPE_RATE_LIMITED,
+                                        SyncLogCollector.TYPE_FETCH_FAILED,
                                         note_id=note_id,
-                                        message=str(msg),
-                                        extra={'retry': retry_attempt + 1}
+                                        message=f"Save error: {str(e)}"
                                     )
-                                wait_time = get_adaptive_delay_manager().get_rate_limit_wait()
-                                time.sleep(wait_time)
-                                continue
-                            
-                            if is_unavailable:
-                                logger.warning(f"Note {note_id} unavailable: {msg}")
-                                if sync_log:
-                                    sync_log.add_issue(
-                                        SyncLogCollector.TYPE_UNAVAILABLE,
-                                        note_id=note_id,
-                                        message=str(msg)
-                                    )
-                                break
-                            
-                            if not success:
-                                if SyncService._handle_auth_error(msg):
-                                    auth_error_msg = f"Cookie expired. Error: {msg}"
-                                    if sync_log:
-                                        sync_log.add_issue(
-                                            SyncLogCollector.TYPE_AUTH_ERROR,
-                                            note_id=note_id,
-                                            message=str(msg)
-                                        )
-                                        sync_log.save_to_db()
-                                    SyncService.stop_sync()
-                                    account.status = 'failed'
-                                    account.error_message = auth_error_msg
-                                    db.session.commit()
-                                    SyncService._mark_accounts_failed(remaining_ids, auth_error_msg)
-                                    break
-                                elif SyncService._is_xsec_token_error(msg) or '暂时无法浏览' in str(msg):
-                                    # Try with user-level xsec_token as fallback
-                                    if xsec_token and retry_attempt == 0:
-                                        fallback_url = f"https://www.xiaohongshu.com/explore/{note_id}?xsec_token={xsec_token}&xsec_source=pc_search"
-                                        success_fallback, msg_fallback, note_info_fallback = data_spider.spider_note(fallback_url, cookie_str)
-                                        if success_fallback and note_info_fallback:
-                                            note_info = note_info_fallback
-                                            success = True
-                                            logger.debug(f"Note {note_id} recovered with user xsec_token")
-                                            # Fall through to success handling below
-                                        else:
-                                            # Fallback 1 failed, try to refresh user xsec_token from user homepage
-                                            logger.debug(f"Note {note_id} fallback with cached xsec_token failed, trying to refresh...")
-                                            refreshed_token = SyncService._fetch_user_xsec_token(account.user_id, xhs_apis, cookie_str)
-                                            if refreshed_token and refreshed_token != xsec_token:
-                                                # Update cached user xsec_token for subsequent notes
-                                                xsec_token = refreshed_token
-                                                retry_url = f"https://www.xiaohongshu.com/explore/{note_id}?xsec_token={refreshed_token}&xsec_source=pc_search"
-                                                success_retry, msg_retry, note_info_retry = data_spider.spider_note(retry_url, cookie_str)
-                                                if success_retry and note_info_retry:
-                                                    note_info = note_info_retry
-                                                    success = True
-                                                    logger.info(f"Note {note_id} recovered with refreshed xsec_token")
-                                                    # Fall through to success handling below
-                                                else:
-                                                    if sync_log:
-                                                        sync_log.add_issue(
-                                                            SyncLogCollector.TYPE_TOKEN_REFRESH,
-                                                            note_id=note_id,
-                                                            message=f"xsec_token invalid, refresh retry also failed: {msg_retry}"
-                                                        )
-                                                    break
-                                            else:
-                                                if sync_log:
-                                                    sync_log.add_issue(
-                                                        SyncLogCollector.TYPE_TOKEN_REFRESH,
-                                                        note_id=note_id,
-                                                        message=f"xsec_token invalid, failed to refresh token: {msg}"
-                                                    )
-                                                break
-                                    elif retry_attempt == 0:
-                                        # No cached xsec_token, try to fetch one from user homepage
-                                        logger.debug(f"Note {note_id} no cached xsec_token, trying to fetch...")
-                                        fetched_token = SyncService._fetch_user_xsec_token(account.user_id, xhs_apis, cookie_str)
-                                        if fetched_token:
-                                            xsec_token = fetched_token
-                                            retry_url = f"https://www.xiaohongshu.com/explore/{note_id}?xsec_token={fetched_token}&xsec_source=pc_search"
-                                            success_retry, msg_retry, note_info_retry = data_spider.spider_note(retry_url, cookie_str)
-                                            if success_retry and note_info_retry:
-                                                note_info = note_info_retry
-                                                success = True
-                                                logger.info(f"Note {note_id} recovered with newly fetched xsec_token")
-                                                # Fall through to success handling below
-                                            else:
-                                                if sync_log:
-                                                    sync_log.add_issue(
-                                                        SyncLogCollector.TYPE_TOKEN_REFRESH,
-                                                        note_id=note_id,
-                                                        message=f"xsec_token invalid, fetched token also failed: {msg_retry}"
-                                                    )
-                                                break
-                                        else:
-                                            if sync_log:
-                                                sync_log.add_issue(
-                                                    SyncLogCollector.TYPE_TOKEN_REFRESH,
-                                                    note_id=note_id,
-                                                    message=f"xsec_token invalid, failed to fetch token: {msg}"
-                                                )
-                                            break
-                                    else:
-                                        if sync_log:
-                                            sync_log.add_issue(
-                                                SyncLogCollector.TYPE_TOKEN_REFRESH,
-                                                note_id=note_id,
-                                                message=f"xsec_token invalid: {msg}"
-                                            )
-                                        break
-                                else:
-                                    # 方案1增强：检测"items"字段缺失错误，提供更详细的错误信息
-                                    error_msg = str(msg)
-                                    is_items_error = "'items'" in error_msg or "items" in error_msg.lower() or "缺少'items'" in error_msg
-                                    
-                                    if is_items_error:
-                                        logger.warning(f"Note {note_id} API响应缺少items字段: {msg}")
-                                        # 方案2：尝试使用备用API端点或延迟重试
-                                        if retry_attempt < 2:  # 还有重试机会
-                                            wait_time = random.uniform(5, 10) * (retry_attempt + 1)
-                                            logger.info(f"Note {note_id} items字段缺失，等待{wait_time:.1f}秒后重试 ({retry_attempt + 1}/3)")
-                                            time.sleep(wait_time)
-                                            continue  # 继续重试
-                                    
-                                    logger.warning(f"Failed to get note detail for {note_id}: {msg}")
-                                    if sync_log:
-                                        sync_log.add_issue(
-                                            SyncLogCollector.TYPE_FETCH_FAILED,
-                                            note_id=note_id,
-                                            message=str(msg)
-                                        )
-                                    # 如果是items错误且已重试多次，继续尝试fallback
-                                    if not is_items_error or retry_attempt >= 2:
-                                        break
-
-                            # Handle successful response (including fallback success)
-                            if success and note_info:
-                                try:
-                                    note_info['xsec_token'] = note_xsec_token
-                                    # 判断是否是新增笔记
-                                    is_new_note = note_id not in existing_note_ids_cache
-                                    SyncService._save_note(note_info, download_media=True, auto_commit=False)
-                                    detail_saved = True
-                                    SyncService._record_success()
-                                    if sync_log:
-                                        sync_log.record_success(note_id, is_new=is_new_note)
-                                    break
-                                except Exception as e:
-                                    logger.warning(f"Error saving note {note_id}: {e}")
-                                    if sync_log:
-                                        sync_log.add_issue(
-                                            SyncLogCollector.TYPE_FETCH_FAILED,
-                                            note_id=note_id,
-                                            message=f"Save error: {str(e)}"
-                                        )
-                                    break
-                            else:
-                                if '频次' in str(msg):
-                                    rate_limited = True
-                                    if sync_log:
-                                        sync_log.add_issue(
-                                            SyncLogCollector.TYPE_RATE_LIMITED,
-                                            note_id=note_id,
-                                            message=f"Empty response: {msg}"
-                                        )
-                                    continue
-                                break
+                        elif fetch_result.is_auth_error:
+                            # 认证错误已在回调中处理，跳出循环
+                            break
                         
-                        # Extended wait on rate limit
-                        if rate_limited and not detail_saved:
-                            total_wait = get_adaptive_delay_manager().get_rate_limit_wait() * 1.5
-                            time.sleep(total_wait)
-                        
-                        # Fallback to list data - 方案3：智能字段补齐
+                        # Fallback to list data if detail fetch failed
                         if not detail_saved:
-                            # 方案3增强：尝试从现有笔记数据中保留已有字段
                             existing_note = existing_notes_cache.get(note_id)
-                            missing_fields = []
-                            
-                            # 检查哪些字段缺失 - 列表API不提供这些字段
-                            # upload_time: 列表API永远不返回此字段
-                            if not existing_note or not existing_note.upload_time:
-                                missing_fields.append('upload_time')
-                            # desc: 列表API可能返回空或截断的内容
-                            if not existing_note or not existing_note.desc:
-                                missing_fields.append('desc')
-                            # 互动数据: 列表API可能不返回所有计数
-                            if not existing_note or existing_note.collected_count is None:
-                                missing_fields.append('collected_count')
-                            if not existing_note or existing_note.comment_count is None:
-                                missing_fields.append('comment_count')
-                            if not existing_note or existing_note.share_count is None:
-                                missing_fields.append('share_count')
+                            missing_fields = SyncService._get_fallback_missing_fields(existing_note)
                             
                             if sync_log:
                                 sync_log.add_issue(
@@ -1102,18 +943,14 @@ class SyncService:
                                 if note_xsec_token:
                                     simple_note['xsec_token'] = note_xsec_token
                                 
-                                # 使用 NoteDataConverter 进行统一的列表API数据转换
-                                # 传入 existing_note 以保留已有字段（如 upload_time, desc 等）
                                 cleaned_data = NoteDataConverter.convert_from_list_api(
                                     simple_note, 
                                     user_id=account.user_id,
                                     existing_note=existing_note
                                 )
-                                # 判断是否是新增笔记
                                 is_new_note = note_id not in existing_note_ids_cache
                                 SyncService._save_note(cleaned_data, download_media=False, auto_commit=False)
                                 logger.debug(f"Note {note_id} saved with list data (fallback), missing fields: {missing_fields}")
-                                # 修复：记录成功（虽然是fallback，但笔记已保存）
                                 if sync_log:
                                     sync_log.record_success(note_id, is_new=is_new_note)
                             except Exception as e:
@@ -1127,26 +964,9 @@ class SyncService:
                         
                         SyncService._sleep_with_jitter(sync_mode)
                     
-                    # Update progress
-                    account.loaded_msgs = idx + 1
-                    account.progress = int(((idx + 1) / total) * 100) if total > 0 else 100
-                    
-                    # Batch commit every 5 notes
-                    if (idx + 1) % 5 == 0 or idx == total - 1:
-                        account.sync_heartbeat = datetime.utcnow()
-                        db.session.commit()
-                        
-                        # 获取当前新增笔记数量
-                        new_notes_count = sync_log.get_new_notes_count() if sync_log else 0
-                        
-                        sync_log_broadcaster.broadcast_progress(
-                            account_id=acc_id,
-                            status='processing',
-                            progress=account.progress,
-                            loaded_msgs=account.loaded_msgs,
-                            total_msgs=total,
-                            new_notes=new_notes_count
-                        )
+                    # Update progress (using tracker)
+                    new_notes_count = sync_log.get_new_notes_count() if sync_log else 0
+                    progress_tracker.update(idx, new_notes_count)
                     
                 # Save remaining batch
                 if sync_mode == 'fast' and fast_sync_batch:

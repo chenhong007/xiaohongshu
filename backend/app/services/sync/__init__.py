@@ -11,6 +11,10 @@ This package contains refactored sync service components:
 - note_persistence: Note database persistence service
 - token_manager: xsec_token unified management
 - note_converter: Unified note data format conversion
+- note_fetcher: Note detail page fetcher with retry and fallback
+- retry_handler: Unified API retry and error handling
+- auth_handler: Centralized authentication error handling
+- progress_tracker: Progress tracking and heartbeat management
 """
 from .delay_manager import AdaptiveDelayManager, get_adaptive_delay_manager
 from .session_pool import RequestSessionPool, get_request_session_pool
@@ -21,6 +25,10 @@ from .state_manager import SyncStateManager, batch_mark_failed
 from .note_persistence import NotePersistenceService
 from .token_manager import XsecTokenManager, get_token_manager, reset_token_manager
 from .note_converter import NoteDataConverter
+from .note_fetcher import NoteFetcher, BatchNoteFetcher, FetchResult
+from .retry_handler import ApiRetryHandler, ErrorType, RetryResult, get_api_retry_handler
+from .auth_handler import AuthErrorHandler, TokenRetryHelper
+from .progress_tracker import ProgressTracker, NoteProcessingHelper
 
 __all__ = [
     'AdaptiveDelayManager',
@@ -39,4 +47,15 @@ __all__ = [
     'get_token_manager',
     'reset_token_manager',
     'NoteDataConverter',
+    'NoteFetcher',
+    'BatchNoteFetcher',
+    'FetchResult',
+    'ApiRetryHandler',
+    'ErrorType',
+    'RetryResult',
+    'get_api_retry_handler',
+    'AuthErrorHandler',
+    'TokenRetryHelper',
+    'ProgressTracker',
+    'NoteProcessingHelper',
 ]
