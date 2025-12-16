@@ -1386,7 +1386,7 @@ class SyncService:
                         note.last_updated = now
                         update_count += 1
                 else:
-                    # Insert new
+                    # Insert new - parse count values (may be strings like "1.1万")
                     mapping = {
                         'note_id': note_id,
                         'user_id': note_data['user_id'],
@@ -1395,10 +1395,10 @@ class SyncService:
                         'title': note_data['title'],
                         'desc': note_data['desc'] or '',
                         'type': note_data['note_type'],
-                        'liked_count': note_data['liked_count'] or 0,
-                        'collected_count': note_data['collected_count'] or 0,
-                        'comment_count': note_data['comment_count'] or 0,
-                        'share_count': note_data['share_count'] or 0,
+                        'liked_count': SyncService._parse_count(note_data['liked_count']) or 0,
+                        'collected_count': SyncService._parse_count(note_data['collected_count']) or 0,
+                        'comment_count': SyncService._parse_count(note_data['comment_count']) or 0,
+                        'share_count': SyncService._parse_count(note_data['share_count']) or 0,
                         'upload_time': note_data['upload_time'] or '',
                         'video_addr': note_data['video_addr'] or '',
                         'image_list': json.dumps(note_data['image_list']) if note_data['image_list'] else '[]',
@@ -1461,14 +1461,15 @@ class SyncService:
                     note.desc = note_data['desc']
                 note.type = note_data['note_type']
                 
+                # Parse count values (may be strings like "1.1万")
                 if note_data['liked_count'] is not None:
-                    note.liked_count = note_data['liked_count']
+                    note.liked_count = SyncService._parse_count(note_data['liked_count'])
                 if note_data['collected_count'] is not None:
-                    note.collected_count = note_data['collected_count']
+                    note.collected_count = SyncService._parse_count(note_data['collected_count'])
                 if note_data['comment_count'] is not None:
-                    note.comment_count = note_data['comment_count']
+                    note.comment_count = SyncService._parse_count(note_data['comment_count'])
                 if note_data['share_count'] is not None:
-                    note.share_count = note_data['share_count']
+                    note.share_count = SyncService._parse_count(note_data['share_count'])
                 if note_data['upload_time']:
                     note.upload_time = note_data['upload_time']
                 if note_data['video_addr']:
@@ -1488,7 +1489,7 @@ class SyncService:
                     note.xsec_token = note_data['xsec_token']
                 note.last_updated = datetime.utcnow()
             else:
-                # Create new
+                # Create new - parse count values (may be strings like "1.1万")
                 note = Note(
                     note_id=note_id,
                     user_id=note_data['user_id'],
@@ -1497,10 +1498,10 @@ class SyncService:
                     title=note_data['title'],
                     desc=note_data['desc'] or '',
                     type=note_data['note_type'],
-                    liked_count=note_data['liked_count'] or 0,
-                    collected_count=note_data['collected_count'] or 0,
-                    comment_count=note_data['comment_count'] or 0,
-                    share_count=note_data['share_count'] or 0,
+                    liked_count=SyncService._parse_count(note_data['liked_count']) or 0,
+                    collected_count=SyncService._parse_count(note_data['collected_count']) or 0,
+                    comment_count=SyncService._parse_count(note_data['comment_count']) or 0,
+                    share_count=SyncService._parse_count(note_data['share_count']) or 0,
                     upload_time=note_data['upload_time'] or '',
                     video_addr=note_data['video_addr'] or '',
                     image_list=json.dumps(note_data['image_list']) if note_data['image_list'] else '[]',

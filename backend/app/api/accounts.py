@@ -299,24 +299,41 @@ def sync_all():
 
 @accounts_bp.route('/accounts/stop-sync', methods=['POST'])
 def stop_sync():
-    """停止同步任务"""
+    """停止同步任务 - 优化：立即返回响应，后台处理数据库更新"""
+    import threading
+    from flask import current_app
+    
     # 获取当前同步模式
     mode_name = '深度同步' if SyncService._current_sync_mode == 'deep' else '极速同步'
     
+    # 立即设置停止标志（这是内存操作，非常快）
     SyncService.stop_sync()
     
-    # 将正在执行或等待执行的任务全部标记为停止，避免前端一直显示“准备中”
-    updated = Account.query.filter(Account.status.in_(['processing', 'pending'])).update(
-        {
-            'status': 'failed',
-            'progress': 0,
-            'error_message': f'用户手动停止{mode_name}'
-        },
-        synchronize_session=False
-    )
-    db.session.commit()
+    # 在后台线程中更新数据库状态，避免阻塞响应
+    def update_accounts_status(app, mode_name):
+        with app.app_context():
+            try:
+                updated = Account.query.filter(Account.status.in_(['processing', 'pending'])).update(
+                    {
+                        'status': 'failed',
+                        'progress': 0,
+                        'error_message': f'用户手动停止{mode_name}'
+                    },
+                    synchronize_session=False
+                )
+                db.session.commit()
+                logger.info(f"停止同步，影响 {updated} 个账号")
+            except Exception as e:
+                logger.error(f"更新账号状态失败: {e}")
+                db.session.rollback()
     
-    logger.info(f"停止同步，影响 {updated} 个账号")
+    # 启动后台线程处理数据库更新
+    app = current_app._get_current_object()
+    thread = threading.Thread(target=update_accounts_status, args=(app, mode_name))
+    thread.daemon = True
+    thread.start()
+    
+    # 立即返回响应
     return success_response(message='正在停止同步任务')
 
 
