@@ -65,6 +65,7 @@ class SyncLogCollector:
         self.summary = {
             'total': 0,           # Total notes
             'success': 0,         # Successfully processed
+            'new_notes': 0,       # Newly added notes (not existed before)
             'rate_limited': 0,    # Rate limit count (unique notes)
             'unavailable': 0,     # Unavailable notes
             'missing_field': 0,   # Missing fields (fallback)
@@ -149,16 +150,33 @@ class SyncLogCollector:
                 elif issue_type == self.TYPE_MEDIA_FAILED:
                     self.summary['media_failed'] += 1
     
-    def record_success(self, note_id: Optional[str] = None) -> None:
+    def record_success(self, note_id: Optional[str] = None, is_new: bool = False) -> None:
         """Record a successfully processed note.
         
         Args:
             note_id: Note ID that was successfully processed
+            is_new: Whether this is a newly added note (not existed before)
         """
         with self._lock:
             self.summary['success'] += 1
+            if is_new:
+                self.summary['new_notes'] += 1
             if note_id:
                 self._success_notes.add(note_id)
+    
+    def record_new_note(self) -> None:
+        """Record a newly added note (convenience method for batch saves)."""
+        with self._lock:
+            self.summary['new_notes'] += 1
+    
+    def get_new_notes_count(self) -> int:
+        """Get current count of newly added notes.
+        
+        Returns:
+            Number of new notes added during this sync
+        """
+        with self._lock:
+            return self.summary['new_notes']
     
     def record_skipped(self) -> None:
         """Record a skipped note (already has complete data)."""

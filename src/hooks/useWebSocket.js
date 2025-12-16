@@ -73,6 +73,7 @@ export const useWebSocket = ({
               progress: data.progress,
               loaded_msgs: data.loaded_msgs,
               total_msgs: data.total_msgs,
+              new_notes: data.new_notes,  // 新增笔记数量
             };
           }
           return acc;
@@ -86,6 +87,19 @@ export const useWebSocket = ({
       
       if (onCompleted) {
         onCompleted(data);
+      }
+      
+      // 同步完成后清除 new_notes 显示
+      if (setAccounts) {
+        setAccounts(prev => prev.map(acc => {
+          if (acc.id === data.account_id) {
+            return {
+              ...acc,
+              new_notes: undefined,  // 清除新增笔记显示
+            };
+          }
+          return acc;
+        }));
       }
       
       // Fetch full account data including sync_logs

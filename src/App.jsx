@@ -282,7 +282,7 @@ function App() {
                   <h2 className="text-2xl font-bold text-gray-800">系统设置</h2>
                 </div>
                 <div className="flex-1 p-6 flex items-center justify-center text-gray-400">
-                  Feature coming soon...
+                  功能开发中...
                 </div>
               </>
             } 

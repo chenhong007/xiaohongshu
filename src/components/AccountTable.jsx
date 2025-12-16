@@ -45,7 +45,7 @@ const AccountRow = ({
           {account.avatar ? (
             <img src={account.avatar} alt={account.name} className="w-full h-full object-cover" />
           ) : (
-            'IMG'
+            '头像'
           )}
         </div>
       </td>
@@ -54,7 +54,18 @@ const AccountRow = ({
       <td className="p-4 text-gray-500">
         {account.last_sync ? new Date(account.last_sync).toLocaleString() : '-'}
       </td>
-      <td className="p-4 text-center">{account.total_msgs || 0}</td>
+      <td className="p-4 text-center">
+        <div className="flex items-center justify-center gap-1">
+          <span>{account.total_msgs || 0}</span>
+          {/* 同步过程中显示新增笔记数量 */}
+          {(account.status === 'processing' || account.status === 'pending') && 
+           account.new_notes > 0 && (
+            <span className="text-green-500 font-medium text-sm animate-pulse">
+              +{account.new_notes}
+            </span>
+          )}
+        </div>
+      </td>
       <td className="p-4 text-center">{account.loaded_msgs || 0}</td>
       <td className="p-4 w-48">
         <div className="flex flex-col gap-1">

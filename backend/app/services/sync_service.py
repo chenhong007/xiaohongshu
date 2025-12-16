@@ -943,7 +943,7 @@ class SyncService:
                                     # 修复：新笔记需要保存并记录为成功
                                     SyncService._save_note(cleaned_data, download_media=False, auto_commit=False)
                                     if sync_log:
-                                        sync_log.record_success(note_id)
+                                        sync_log.record_success(note_id, is_new=True)
                             else:
                                 fast_sync_batch.append(cleaned_data)
                                 
@@ -953,6 +953,10 @@ class SyncService:
                                             fast_sync_batch, existing_note_ids_cache, existing_notes_cache
                                         )
                                         logger.debug(f"[FastSync] Batch saved {len(fast_sync_batch)}: {inserted} new, {updated} updated")
+                                        # 记录新增笔记数量
+                                        if sync_log and inserted > 0:
+                                            for _ in range(inserted):
+                                                sync_log.record_new_note()
                                     except Exception as e:
                                         logger.error(f"[FastSync] Batch save failed: {e}")
                                     fast_sync_batch = []
@@ -1128,11 +1132,13 @@ class SyncService:
                             if success and note_info:
                                 try:
                                     note_info['xsec_token'] = note_xsec_token
+                                    # 判断是否是新增笔记
+                                    is_new_note = note_id not in existing_note_ids_cache
                                     SyncService._save_note(note_info, download_media=True, auto_commit=False)
                                     detail_saved = True
                                     SyncService._record_success()
                                     if sync_log:
-                                        sync_log.record_success(note_id)
+                                        sync_log.record_success(note_id, is_new=is_new_note)
                                     break
                                 except Exception as e:
                                     logger.warning(f"Error saving note {note_id}: {e}")
@@ -1202,11 +1208,13 @@ class SyncService:
                                 
                                 # Use list note converter instead of handle_note_info (which expects detail format)
                                 cleaned_data = SyncService._convert_list_note(simple_note, user_id=account.user_id)
+                                # 判断是否是新增笔记
+                                is_new_note = note_id not in existing_note_ids_cache
                                 SyncService._save_note(cleaned_data, download_media=False, auto_commit=False)
                                 logger.debug(f"Note {note_id} saved with list data (fallback)")
                                 # 修复：记录成功（虽然是fallback，但笔记已保存）
                                 if sync_log:
-                                    sync_log.record_success(note_id)
+                                    sync_log.record_success(note_id, is_new=is_new_note)
                             except Exception as e:
                                 logger.warning(f"Error saving note {note_id} with list data: {e}")
                                 if sync_log:
@@ -1227,12 +1235,16 @@ class SyncService:
                         account.sync_heartbeat = datetime.utcnow()
                         db.session.commit()
                         
+                        # 获取当前新增笔记数量
+                        new_notes_count = sync_log.get_new_notes_count() if sync_log else 0
+                        
                         sync_log_broadcaster.broadcast_progress(
                             account_id=acc_id,
                             status='processing',
                             progress=account.progress,
                             loaded_msgs=account.loaded_msgs,
-                            total_msgs=total
+                            total_msgs=total,
+                            new_notes=new_notes_count
                         )
                     
                 # Save remaining batch
@@ -1242,6 +1254,10 @@ class SyncService:
                             fast_sync_batch, existing_note_ids_cache, existing_notes_cache
                         )
                         logger.debug(f"[FastSync] Final batch: {inserted} new, {updated} updated")
+                        # 记录新增笔记数量
+                        if sync_log and inserted > 0:
+                            for _ in range(inserted):
+                                sync_log.record_new_note()
                     except Exception as e:
                         logger.error(f"[FastSync] Final batch save failed: {e}")
                 

@@ -181,7 +181,7 @@ export const ContentArea = ({
       setTimeout(fetchAccounts, 200);
     } catch (err) {
       console.error('Sync failed:', err);
-      setError('Sync failed');
+      setError('同步失败');
       fetchAccounts();
     }
   }, [updateLocalAccountsStatus, fetchAccounts, setError]);
@@ -191,7 +191,7 @@ export const ContentArea = ({
     const idsToSync = selectedIds.size > 0 ? Array.from(selectedIds) : [];
     
     if (idsToSync.length === 0) {
-      if (!confirm('No accounts selected. Sync all accounts?')) return;
+      if (!confirm('未选择账号，是否同步所有账号？')) return;
         return handleSyncAll(mode);
     }
     
@@ -204,7 +204,7 @@ export const ContentArea = ({
       setTimeout(fetchAccounts, 500);
     } catch (err) {
       console.error('Batch sync failed:', err);
-      setError('Batch sync failed');
+      setError('批量同步失败');
       fetchAccounts();
     } finally {
       setLoading(false);
@@ -222,7 +222,7 @@ export const ContentArea = ({
       setTimeout(fetchAccounts, 500);
     } catch (err) {
       console.error('Sync all failed:', err);
-      setError('Sync failed');
+      setError('同步失败');
       fetchAccounts();
     } finally {
       setLoading(false);
@@ -269,13 +269,13 @@ export const ContentArea = ({
     try {
       const result = await accountApi.fixMissing(accountId, false);
       if (result.missing_count === 0) {
-        alert('All notes already have complete data');
+        alert('所有笔记数据已完整，无需补齐');
         fetchAccounts();
         return;
       }
       setTimeout(fetchAccounts, 200);
     } catch (err) {
-      setError('Failed to fix missing data');
+      setError('补齐缺失数据失败');
       fetchAccounts();
     }
   }, [updateLocalAccountsStatus, fetchAccounts, setError]);
@@ -283,29 +283,29 @@ export const ContentArea = ({
   // Delete accounts
   const handleDelete = useCallback(async () => {
     if (selectedIds.size === 0) {
-      alert('Please select accounts to delete');
+      alert('请先选择要删除的账号');
       return;
     }
-    if (!confirm(`Delete ${selectedIds.size} selected accounts?`)) return;
+    if (!confirm(`确定要删除选中的 ${selectedIds.size} 个账号吗？`)) return;
     
     try {
       await accountApi.batchDelete(Array.from(selectedIds));
       setSelectedIds(new Set());
       fetchAccounts();
     } catch (err) {
-      setError('Delete failed');
+      setError('删除失败');
     }
   }, [selectedIds, fetchAccounts, setError]);
 
   // Reset database
   const handleReset = useCallback(async () => {
-    if (!confirm('Clear all data? This cannot be undone.')) return;
+    if (!confirm('确定要清空所有数据吗？此操作不可撤销！')) return;
     try {
       await accountApi.reset();
       fetchAccounts();
       setSelectedIds(new Set());
     } catch (err) {
-      setError('Failed to clear database');
+      setError('清空数据库失败');
     }
   }, [fetchAccounts, setError]);
 
@@ -330,7 +330,7 @@ export const ContentArea = ({
         }
         
         if (userIds.length === 0) {
-          alert('No valid user IDs found');
+          alert('未找到有效的用户ID');
           return;
         }
         
@@ -344,10 +344,10 @@ export const ContentArea = ({
           }
         }
         
-        alert(`Imported ${added} accounts`);
+        alert(`成功导入 ${added} 个账号`);
         fetchAccounts();
       } catch (err) {
-        alert('Import failed: ' + err.message);
+        alert('导入失败: ' + err.message);
       }
     };
     input.click();
@@ -360,7 +360,7 @@ export const ContentArea = ({
       : accounts;
     
     if (exportData.length === 0) {
-      alert('No data to export');
+      alert('没有可导出的数据');
       return;
     }
     
