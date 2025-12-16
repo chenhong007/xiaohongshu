@@ -843,14 +843,51 @@ class SyncService:
                     need_fetch_detail = False
                     
                     if sync_mode == 'deep':
+                        # 检查笔记是否超过7天
+                        is_old_note = False
+                        upload_time_str = simple_note.get('upload_time') or ''
+                        if upload_time_str:
+                            try:
+                                # 尝试解析upload_time，可能是时间戳或日期字符串
+                                if isinstance(upload_time_str, (int, float)):
+                                    upload_dt = datetime.fromtimestamp(upload_time_str)
+                                elif isinstance(upload_time_str, str):
+                                    # 尝试多种日期格式
+                                    for fmt in ['%Y-%m-%d %H:%M:%S', '%Y-%m-%d', '%Y/%m/%d %H:%M:%S', '%Y/%m/%d']:
+                                        try:
+                                            upload_dt = datetime.strptime(upload_time_str, fmt)
+                                            break
+                                        except ValueError:
+                                            continue
+                                    else:
+                                        upload_dt = None
+                                else:
+                                    upload_dt = None
+                                
+                                if upload_dt:
+                                    age_days = (datetime.utcnow() - upload_dt).total_seconds() / 86400
+                                    is_old_note = age_days > 7
+                                    if is_old_note:
+                                        logger.debug(f"Note {note_id} is {age_days:.1f} days old, skip detail fetch")
+                            except Exception as e:
+                                logger.debug(f"Failed to parse upload_time for note {note_id}: {e}")
+                        
                         existing_note = existing_notes_cache.get(note_id)
                         if not existing_note:
-                            need_fetch_detail = True
-                        else:
-                            missing_fields = SyncService._get_missing_required_fields(existing_note)
-                            if missing_fields:
+                            # 新笔记：如果超过7天，不进入详情页
+                            if not is_old_note:
                                 need_fetch_detail = True
-                                logger.debug(f"Note {note_id} missing fields: {missing_fields}")
+                            else:
+                                logger.debug(f"Note {note_id} is old (>7 days), skip detail for new note")
+                        else:
+                            # 已存在的笔记：如果超过7天，不进入详情页
+                            if not is_old_note:
+                                missing_fields = SyncService._get_missing_required_fields(existing_note)
+                                if missing_fields:
+                                    need_fetch_detail = True
+                                    logger.debug(f"Note {note_id} missing fields: {missing_fields}")
+                            else:
+                                logger.debug(f"Note {note_id} is old (>7 days), skip detail check")
 
                     if not need_fetch_detail:
                         # Quick update from list data
@@ -873,7 +910,7 @@ class SyncService:
                                     # 修复：新笔记需要保存并记录为成功
                                     SyncService._save_note(cleaned_data, download_media=False, auto_commit=False)
                                     if sync_log:
-                                        sync_log.record_success()
+                                        sync_log.record_success(note_id)
                             else:
                                 fast_sync_batch.append(cleaned_data)
                                 
@@ -1062,7 +1099,7 @@ class SyncService:
                                     detail_saved = True
                                     SyncService._record_success()
                                     if sync_log:
-                                        sync_log.record_success()
+                                        sync_log.record_success(note_id)
                                     break
                                 except Exception as e:
                                     logger.warning(f"Error saving note {note_id}: {e}")
@@ -1136,7 +1173,7 @@ class SyncService:
                                 logger.debug(f"Note {note_id} saved with list data (fallback)")
                                 # 修复：记录成功（虽然是fallback，但笔记已保存）
                                 if sync_log:
-                                    sync_log.record_success()
+                                    sync_log.record_success(note_id)
                             except Exception as e:
                                 logger.warning(f"Error saving note {note_id} with list data: {e}")
                                 if sync_log:

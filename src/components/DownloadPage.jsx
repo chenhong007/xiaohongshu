@@ -158,7 +158,7 @@ export const DownloadPage = ({ accounts: cachedAccounts = [], accountsLoading = 
   const [columnConfigOpen, setColumnConfigOpen] = useState(false);
   const [visibleColumns, setVisibleColumns] = useState({
     type: true,
-    preview: true,
+    preview: false,
     remoteUrl: true,
     xhsDetail: true,  // 小红书详情页链接
     uploadTime: true,

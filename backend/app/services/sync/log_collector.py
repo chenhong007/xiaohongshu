@@ -83,6 +83,8 @@ class SyncLogCollector:
             self.TYPE_MEDIA_FAILED: set(),
             self.TYPE_AUTH_ERROR: set(),
         }
+        # Track successfully processed notes (to filter out temporary issues)
+        self._success_notes: set = set()
         self._lock = threading.Lock()
     
     def add_issue(
@@ -147,10 +149,16 @@ class SyncLogCollector:
                 elif issue_type == self.TYPE_MEDIA_FAILED:
                     self.summary['media_failed'] += 1
     
-    def record_success(self) -> None:
-        """Record a successfully processed note."""
+    def record_success(self, note_id: Optional[str] = None) -> None:
+        """Record a successfully processed note.
+        
+        Args:
+            note_id: Note ID that was successfully processed
+        """
         with self._lock:
             self.summary['success'] += 1
+            if note_id:
+                self._success_notes.add(note_id)
     
     def record_skipped(self) -> None:
         """Record a skipped note (already has complete data)."""
@@ -169,27 +177,66 @@ class SyncLogCollector:
     def finalize(self) -> Dict:
         """Finalize log collection and generate final log data.
         
+        Only keeps issues for notes that were NOT successfully synced.
+        If a note had temporary issues but eventually succeeded, its issues are filtered out.
+        
         Returns:
             Dictionary containing sync_mode, times, summary, and issues
         """
         with self._lock:
             self.end_time = datetime.utcnow().isoformat() + 'Z'
             
-            # Calculate unique problem note count (deduplicated by note_id)
-            unique_problem_notes = set()
-            for issue_type, note_ids in self._counted_notes.items():
-                # Only count problem types (exclude token_refresh which is normal event)
-                if issue_type != self.TYPE_TOKEN_REFRESH:
-                    unique_problem_notes.update(note_ids)
+            # Filter issues: only keep issues for notes that were NOT successfully synced
+            # This ensures we only show problems for notes that actually failed
+            filtered_issues = []
+            for issue in self.issues:
+                note_id = issue.get('note_id')
+                if not note_id or note_id not in self._success_notes:
+                    filtered_issues.append(issue)
             
+            # Recalculate problem note counts based on filtered issues
+            problem_note_ids = set()
+            recalculated_counts = {
+                'rate_limited': 0,
+                'unavailable': 0,
+                'missing_field': 0,
+                'fetch_failed': 0,
+                'token_refresh': 0,
+                'media_failed': 0,
+            }
+            
+            for issue in filtered_issues:
+                note_id = issue.get('note_id')
+                issue_type = issue.get('type')
+                
+                # Count unique problem notes (excluding token_refresh)
+                if note_id and issue_type != self.TYPE_TOKEN_REFRESH:
+                    problem_note_ids.add(note_id)
+                
+                # Count by type
+                if issue_type == self.TYPE_RATE_LIMITED:
+                    recalculated_counts['rate_limited'] += 1
+                elif issue_type == self.TYPE_UNAVAILABLE:
+                    recalculated_counts['unavailable'] += 1
+                elif issue_type == self.TYPE_MISSING_FIELD:
+                    recalculated_counts['missing_field'] += 1
+                elif issue_type == self.TYPE_FETCH_FAILED:
+                    recalculated_counts['fetch_failed'] += 1
+                elif issue_type == self.TYPE_TOKEN_REFRESH:
+                    recalculated_counts['token_refresh'] += 1
+                elif issue_type == self.TYPE_MEDIA_FAILED:
+                    recalculated_counts['media_failed'] += 1
+            
+            # Update summary with recalculated counts
             summary = self.summary.copy()
-            summary['unique_problem_notes'] = len(unique_problem_notes)
+            summary.update(recalculated_counts)
+            summary['unique_problem_notes'] = len(problem_note_ids)
             
             # 验证统计数据一致性：total 应该等于 success + skipped + unique_problem_notes
             total = summary.get('total', 0)
             success = summary.get('success', 0)
             skipped = summary.get('skipped', 0)
-            problems = len(unique_problem_notes)
+            problems = len(problem_note_ids)
             calculated_total = success + skipped + problems
             
             if total != calculated_total:
@@ -206,7 +253,7 @@ class SyncLogCollector:
                 'start_time': self.start_time,
                 'end_time': self.end_time,
                 'summary': summary,
-                'issues': self.issues.copy(),
+                'issues': filtered_issues,  # Use filtered issues
             }
     
     def save_to_db(self) -> bool:
