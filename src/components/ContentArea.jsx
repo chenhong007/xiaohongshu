@@ -158,10 +158,33 @@ export const ContentArea = ({
   }, [selectedIds.size, filteredAccounts]);
 
   // Update local account status (optimistic update)
-  const updateLocalAccountsStatus = useCallback((ids, status, progress = 0) => {
-    const idSet = new Set(ids);
+  // 支持批量同步时：第一个账号 processing，其余 pending
+  const updateLocalAccountsStatus = useCallback((ids, status, progress = 0, batchMode = false) => {
+    const idArray = Array.isArray(ids) ? ids : [ids];
+    const firstId = idArray[0];
+    const restIds = new Set(idArray.slice(1));
+    
     setAccounts(prev => prev.map(acc => {
-      if (idSet.has(acc.id)) {
+      // 批量模式：第一个账号 processing，其余 pending
+      if (batchMode && idArray.length > 1) {
+        if (acc.id === firstId) {
+          return { 
+            ...acc, 
+            status: 'processing', 
+            progress: 0,
+            loaded_msgs: 0
+          };
+        }
+        if (restIds.has(acc.id)) {
+          return { 
+            ...acc, 
+            status: 'pending', 
+            progress: 0,
+            error_message: null
+          };
+        }
+      } else if (idArray.includes(acc.id)) {
+        // 非批量模式或单个账号：统一设置状态
         return { 
           ...acc, 
           status, 
@@ -195,7 +218,8 @@ export const ContentArea = ({
         return handleSyncAll(mode);
     }
     
-    updateLocalAccountsStatus(idsToSync, 'processing', 0);
+    // 批量模式：第一个 processing，其余 pending
+    updateLocalAccountsStatus(idsToSync, 'processing', 0, true);
     setLoading(true);
     
     try {
@@ -214,7 +238,8 @@ export const ContentArea = ({
   // Sync all
   const handleSyncAll = useCallback(async (mode = 'fast') => {
     const allIds = accounts.map(acc => acc.id);
-    updateLocalAccountsStatus(allIds, 'processing', 0);
+    // 批量模式：第一个 processing，其余 pending
+    updateLocalAccountsStatus(allIds, 'processing', 0, true);
     setLoading(true);
     
     try {

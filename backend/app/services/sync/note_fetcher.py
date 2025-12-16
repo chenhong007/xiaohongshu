@@ -33,6 +33,7 @@ class FetchResult:
     error_message: str = ''
     used_fallback: bool = False  # 是否使用了 fallback token
     retry_count: int = 0
+    new_xsec_token: Optional[str] = None  # 新获取的 xsec_token（用于更新数据库）
     
     @property
     def is_rate_limited(self) -> bool:
@@ -237,13 +238,25 @@ class NoteFetcher:
                     )
                 continue
             
-            # 5. Items 缺失 - 延迟后重试
+            # 5. Items 缺失 - xsec_token 无效，直接从用户笔记列表获取新 token
             if error_type == ErrorType.ITEMS_MISSING:
-                logger.warning(f"Note {note_id} API响应缺少items字段: {msg}")
-                if retry_attempt < self.MAX_RETRIES - 1:
-                    wait_time = random.uniform(5, 10) * (retry_attempt + 1)
-                    logger.info(f"Note {note_id} items字段缺失，等待{wait_time:.1f}秒后重试")
-                    time.sleep(wait_time)
+                logger.warning(f"Note {note_id} API响应缺少items字段（xsec_token无效）: {msg}")
+                
+                # 直接从用户笔记列表获取新的笔记级 token
+                if user_id:
+                    fallback_result = self._try_token_fallback(note_id, user_id, retry_attempt)
+                    if fallback_result.success:
+                        return fallback_result
+                    # Fallback 失败，不再重试（token 问题无法通过简单重试解决）
+                    logger.warning(f"Note {note_id} 无法获取有效的 xsec_token")
+                    return FetchResult(
+                        success=False,
+                        error_type=error_type,
+                        error_message="xsec_token 无效且无法刷新",
+                        retry_count=total_retries
+                    )
+                else:
+                    logger.warning(f"Note {note_id} 缺少 user_id，无法刷新 token")
                 continue
             
             # 6. 其他错误 - 记录并继续重试
@@ -267,18 +280,19 @@ class NoteFetcher:
         self,
         note_id: str,
         user_id: Optional[str],
-        retry_attempt: int
+        retry_attempt: int,
+        force_refresh: bool = False
     ) -> FetchResult:
-        """尝试使用 fallback token 获取笔记
+        """尝试从用户笔记列表获取笔记级 token 并重试
         
-        Fallback 策略：
-        1. 使用缓存的用户级 token
-        2. 刷新用户级 token 后重试
+        注意：用户级 token 不能用于获取笔记详情，必须使用笔记级 token。
+        因此直接从用户笔记列表 API 获取该笔记的 xsec_token。
         
         Args:
             note_id: 笔记 ID
             user_id: 用户 ID
             retry_attempt: 当前重试次数
+            force_refresh: 未使用，保留参数兼容性
             
         Returns:
             FetchResult: 获取结果（success=False 表示 fallback 失败）
@@ -286,57 +300,42 @@ class NoteFetcher:
         if not user_id:
             return FetchResult(success=False, error_message="No user_id for fallback")
         
-        # 策略1: 使用缓存的用户级 token
-        cached_token = self._token_mgr.get_cached_token(user_id)
-        if cached_token and retry_attempt == 0:
-            fallback_url = self._token_mgr.build_note_url(note_id, cached_token)
+        # 直接从用户笔记列表获取笔记级 token（用户级 token 不能获取笔记详情）
+        logger.info(f"Note {note_id} xsec_token 失效，从用户笔记列表获取新 token...")
+        note_token = self._token_mgr.refresh_note_token(note_id, user_id)
+        
+        if note_token:
+            note_url = self._token_mgr.build_note_url(note_id, note_token)
             try:
-                success, msg, note_info = self._spider.spider_note(fallback_url, self._cookie_str)
+                success, msg, note_info = self._spider.spider_note(note_url, self._cookie_str)
                 if success and note_info:
-                    logger.debug(f"Note {note_id} recovered with cached user token")
+                    logger.info(f"Note {note_id} 使用新 token 获取成功")
                     return FetchResult(
                         success=True,
                         note_data=note_info,
-                        used_fallback=True
-                    )
-            except Exception as e:
-                logger.debug(f"Fallback with cached token failed: {e}")
-        
-        # 策略2: 刷新用户级 token
-        logger.debug(f"Note {note_id} trying to refresh user token...")
-        refreshed_token = self._token_mgr.refresh_user_token(user_id)
-        
-        if refreshed_token:
-            retry_url = self._token_mgr.build_note_url(note_id, refreshed_token)
-            try:
-                success, msg, note_info = self._spider.spider_note(retry_url, self._cookie_str)
-                if success and note_info:
-                    logger.info(f"Note {note_id} recovered with refreshed user token")
-                    return FetchResult(
-                        success=True,
-                        note_data=note_info,
-                        used_fallback=True
+                        used_fallback=True,
+                        new_xsec_token=note_token  # 返回新 token 用于更新数据库
                     )
                 else:
                     self._log_issue(
                         SyncLogCollector.TYPE_TOKEN_REFRESH,
                         note_id,
-                        f"xsec_token invalid, refresh retry also failed: {msg}"
+                        f"新 token 仍然失败: {msg}"
                     )
             except Exception as e:
                 self._log_issue(
                     SyncLogCollector.TYPE_TOKEN_REFRESH,
                     note_id,
-                    f"Exception with refreshed token: {e}"
+                    f"使用新 token 时发生异常: {e}"
                 )
         else:
             self._log_issue(
                 SyncLogCollector.TYPE_TOKEN_REFRESH,
                 note_id,
-                "Failed to refresh user token"
+                "无法从用户笔记列表获取新 token"
             )
         
-        return FetchResult(success=False, error_message="All fallback attempts failed")
+        return FetchResult(success=False, error_message="Failed to refresh note token")
     
     def _get_wait_time(self, retry_attempt: int, error_type: ErrorType) -> float:
         """计算等待时间

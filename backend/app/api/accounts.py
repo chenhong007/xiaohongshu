@@ -248,11 +248,22 @@ def sync_batch():
     if SyncService.is_sync_running():
         return ApiResponse.error('已有同步任务正在运行，请等待当前任务完成或停止后再试', 409, 'SYNC_IN_PROGRESS')
     
-    # 重置状态
-    Account.query.filter(Account.id.in_(ids)).update(
-        {'status': 'pending', 'progress': 0, 'error_message': None},
+    # 重置状态：第一个账号设为 processing（同步中），其余设为 pending（待同步）
+    # 这样前端能正确显示：1个在同步，其他在排队等待
+    first_id = ids[0]
+    rest_ids = ids[1:] if len(ids) > 1 else []
+    
+    # 第一个账号设为 processing
+    Account.query.filter(Account.id == first_id).update(
+        {'status': 'processing', 'progress': 0, 'error_message': None},
         synchronize_session=False
     )
+    # 其余账号设为 pending
+    if rest_ids:
+        Account.query.filter(Account.id.in_(rest_ids)).update(
+            {'status': 'pending', 'progress': 0, 'error_message': None},
+            synchronize_session=False
+        )
     db.session.commit()
     
     # 尝试启动同步
@@ -303,21 +314,31 @@ def sync_all():
     if SyncService.is_sync_running():
         return ApiResponse.error('已有同步任务正在运行，请等待当前任务完成或停止后再试', 409, 'SYNC_IN_PROGRESS')
     
-    Account.query.update({
-        'status': 'pending',
-        'progress': 0,
-        'error_message': None
-    })
+    # 重置状态：第一个账号设为 processing（同步中），其余设为 pending（待同步）
+    first_id = ids[0]
+    rest_ids = ids[1:] if len(ids) > 1 else []
+    
+    # 第一个账号设为 processing
+    Account.query.filter(Account.id == first_id).update(
+        {'status': 'processing', 'progress': 0, 'error_message': None},
+        synchronize_session=False
+    )
+    # 其余账号设为 pending
+    if rest_ids:
+        Account.query.filter(Account.id.in_(rest_ids)).update(
+            {'status': 'pending', 'progress': 0, 'error_message': None},
+            synchronize_session=False
+        )
     db.session.commit()
     
     # 尝试启动同步
     success, message = SyncService.start_sync(ids, sync_mode=mode)
     if not success:
         # 回滚状态
-        Account.query.update({
-            'status': 'failed',
-            'error_message': message
-        })
+        Account.query.filter(Account.id.in_(ids)).update(
+            {'status': 'failed', 'error_message': message},
+            synchronize_session=False
+        )
         db.session.commit()
         return ApiResponse.error(message, 409, 'SYNC_IN_PROGRESS')
     

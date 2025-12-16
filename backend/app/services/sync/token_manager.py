@@ -169,11 +169,18 @@ class XsecTokenManager:
             )
             
             if not success or not res_json:
-                logger.debug(f"Failed to get homefeed: {msg}")
+                logger.warning(f"Failed to get homefeed for token refresh: {msg}")
                 return ''
             
             # 从返回的笔记中提取 xsec_token
-            items = res_json.get('data', {}).get('items', [])
+            data = res_json.get('data', {})
+            items = data.get('items', [])
+            
+            if not items:
+                # homefeed 也可能返回空 items（与笔记详情类似的问题）
+                logger.warning(f"Homefeed returned empty items, data keys: {list(data.keys())}")
+                return ''
+            
             for item in items:
                 # 尝试从笔记的不同位置获取 xsec_token
                 xsec_token = (
@@ -182,13 +189,13 @@ class XsecTokenManager:
                     item.get('id', '') and self._extract_token_from_item(item)
                 )
                 if xsec_token:
-                    logger.debug(f"Got xsec_token from homefeed item")
+                    logger.debug(f"Got xsec_token from homefeed item (len={len(xsec_token)})")
                     return xsec_token
             
-            logger.debug("No xsec_token found in homefeed items")
+            logger.warning(f"No xsec_token found in {len(items)} homefeed items")
             
         except Exception as e:
-            logger.debug(f"Exception getting token from homefeed: {e}")
+            logger.warning(f"Exception getting token from homefeed: {e}")
         
         return ''
     
@@ -412,6 +419,92 @@ class XsecTokenManager:
                 fallback_url = self.build_note_url(note_id, user_token)
         
         return primary_url, fallback_url
+    
+    def refresh_note_token(self, note_id: str, user_id: str) -> Optional[str]:
+        """从用户笔记列表重新获取笔记的 xsec_token
+        
+        当笔记的 xsec_token 失效时，通过调用用户笔记列表 API 获取新的 token。
+        
+        Args:
+            note_id: 笔记 ID
+            user_id: 用户 ID
+            
+        Returns:
+            新的 xsec_token，获取失败返回 None
+        """
+        if not note_id or not user_id or not self._xhs_apis:
+            return None
+        
+        try:
+            # 先获取用户级 token 用于调用笔记列表 API
+            user_token = self.get_user_token(user_id, force_refresh=True)
+            if not user_token:
+                logger.warning(f"无法获取用户 {user_id} 的 token，无法刷新笔记 {note_id} 的 token")
+                return None
+            
+            # 调用用户笔记列表 API
+            success, msg, res_json = self._xhs_apis.get_user_note_info(
+                user_id=user_id,
+                cursor='',
+                cookies_str=self._cookie_str,
+                xsec_token=user_token,
+                xsec_source='pc_search'
+            )
+            
+            if not success or not res_json:
+                logger.warning(f"获取用户笔记列表失败: {msg}")
+                return None
+            
+            # 从笔记列表中查找目标笔记
+            notes = res_json.get('data', {}).get('notes', [])
+            for note in notes:
+                nid = note.get('note_id') or note.get('id')
+                if nid == note_id:
+                    new_token = note.get('xsec_token')
+                    if new_token:
+                        logger.info(f"成功从用户笔记列表获取笔记 {note_id} 的新 xsec_token")
+                        return new_token
+            
+            # 如果第一页没找到，可能需要翻页（但通常热门笔记在前面）
+            logger.debug(f"笔记 {note_id} 未在用户 {user_id} 的第一页笔记列表中找到")
+            
+            # 尝试翻页查找（最多查找3页）
+            cursor = res_json.get('data', {}).get('cursor', '')
+            has_more = res_json.get('data', {}).get('has_more', False)
+            
+            for page in range(2, 4):  # 第2-3页
+                if not has_more or not cursor:
+                    break
+                
+                success, msg, res_json = self._xhs_apis.get_user_note_info(
+                    user_id=user_id,
+                    cursor=cursor,
+                    cookies_str=self._cookie_str,
+                    xsec_token=user_token,
+                    xsec_source='pc_search'
+                )
+                
+                if not success or not res_json:
+                    break
+                
+                notes = res_json.get('data', {}).get('notes', [])
+                for note in notes:
+                    nid = note.get('note_id') or note.get('id')
+                    if nid == note_id:
+                        new_token = note.get('xsec_token')
+                        if new_token:
+                            logger.info(f"成功从用户笔记列表第{page}页获取笔记 {note_id} 的新 xsec_token")
+                            return new_token
+                
+                cursor = res_json.get('data', {}).get('cursor', '')
+                has_more = res_json.get('data', {}).get('has_more', False)
+            
+            logger.warning(f"在用户 {user_id} 的笔记列表中未找到笔记 {note_id}")
+            
+        except Exception as e:
+            logger.warning(f"刷新笔记 {note_id} 的 token 时发生异常: {e}")
+        
+        return None
     
     @staticmethod
     def is_token_error(msg: str) -> bool:

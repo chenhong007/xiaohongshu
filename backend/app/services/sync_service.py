@@ -1010,7 +1010,14 @@ class SyncService:
                         if fetch_result.success and fetch_result.note_data:
                             try:
                                 note_info = fetch_result.note_data
-                                note_info['xsec_token'] = note_xsec_token
+                                # 优先使用新获取的 token（fallback 成功时），否则使用原 token
+                                effective_token = fetch_result.new_xsec_token or note_xsec_token
+                                note_info['xsec_token'] = effective_token
+                                
+                                # 如果获取到新 token，记录日志
+                                if fetch_result.new_xsec_token:
+                                    logger.info(f"Note {note_id} xsec_token updated via fallback")
+                                
                                 is_new_note = note_id not in existing_note_ids_cache
                                 SyncService._save_note(note_info, download_media=True, auto_commit=False)
                                 detail_saved = True
