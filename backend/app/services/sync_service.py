@@ -30,6 +30,7 @@ from ..models import Account, Note, Cookie
 from ..utils.logger import get_logger
 from ..config import Config
 from .sync_log_broadcaster import sync_log_broadcaster
+from .cookie_service import CookieService
 
 # Import refactored modules
 from .sync.delay_manager import AdaptiveDelayManager, get_adaptive_delay_manager
