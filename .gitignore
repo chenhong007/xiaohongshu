@@ -3,6 +3,7 @@ XHS-Downloader
 Spider_XHS
 backend/xhs_data.db
 *.pyc
+__pycache__/
 *.log
 # 部署版本记录（本地状态）
 .deploy_version
