@@ -815,36 +815,48 @@ class SyncService:
                     excluded_count = 0  # 排除的笔记数（不计入分母）
                     for note in all_note_info:
                         note_id = note.get('note_id') or note.get('id')
-                        
-                        # Check if note is old (>7 days)
-                        is_old_note = False
-                        upload_time_str = note.get('upload_time') or ''
-                        if upload_time_str:
-                            try:
-                                if isinstance(upload_time_str, (int, float)):
-                                    upload_dt = datetime.fromtimestamp(upload_time_str)
-                                elif isinstance(upload_time_str, str):
-                                    for fmt in ['%Y-%m-%d %H:%M:%S', '%Y-%m-%d', '%Y/%m/%d %H:%M:%S', '%Y/%m/%d']:
-                                        try:
-                                            upload_dt = datetime.strptime(upload_time_str, fmt)
-                                            break
-                                        except ValueError:
-                                            continue
-                                    else:
-                                        upload_dt = None
-                                else:
-                                    upload_dt = None
-                                
-                                if upload_dt:
-                                    age_days = (datetime.utcnow() - upload_dt).total_seconds() / 86400
-                                    is_old_note = age_days > 7
-                            except Exception:
-                                pass
-                        
                         existing_note = existing_notes_cache.get(note_id)
+                        
+                        # 新笔记：必须获取详情页数据
+                        if not existing_note:
+                            filtered_notes.append(note)
+                            continue
+                        
+                        # 已存在的笔记：检查 upload_time 是否缺失
+                        # 如果缺失，无论多久都需要深度同步
+                        existing_upload_time = getattr(existing_note, 'upload_time', None)
+                        if not existing_upload_time or (isinstance(existing_upload_time, str) and existing_upload_time.strip() == ''):
+                            # upload_time 缺失，必须深度同步
+                            filtered_notes.append(note)
+                            logger.debug(f"Note {note_id} missing upload_time, must fetch detail")
+                            continue
+                        
+                        # 从数据库已存在的笔记获取 upload_time 来判断是否超过7天
+                        is_old_note = False
+                        try:
+                            upload_time_str = existing_upload_time
+                            if isinstance(upload_time_str, (int, float)):
+                                upload_dt = datetime.fromtimestamp(upload_time_str)
+                            elif isinstance(upload_time_str, str):
+                                upload_dt = None
+                                for fmt in ['%Y-%m-%d %H:%M:%S', '%Y-%m-%d', '%Y/%m/%d %H:%M:%S', '%Y/%m/%d']:
+                                    try:
+                                        upload_dt = datetime.strptime(upload_time_str, fmt)
+                                        break
+                                    except ValueError:
+                                        continue
+                            else:
+                                upload_dt = None
+                            
+                            if upload_dt:
+                                age_days = (datetime.utcnow() - upload_dt).total_seconds() / 86400
+                                is_old_note = age_days > 7
+                        except Exception:
+                            pass
+                        
                         should_include = True  # 是否计入分母
                         
-                        if is_old_note and existing_note:
+                        if is_old_note:
                             # 超过7天的旧笔记：检查是否数据完整
                             missing_fields = SyncService._get_missing_required_fields(existing_note)
                             if not missing_fields:

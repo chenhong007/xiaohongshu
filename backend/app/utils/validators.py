@@ -113,11 +113,16 @@ def validate_cookie_str(cookie_str: Any) -> Tuple[bool, Optional[str]]:
 def validate_filled_at(
     filled_at: Any,
     field_name: str = '填写时间',
-    future_tolerance_seconds: int = 300
+    future_tolerance_seconds: int = 900
 ) -> Tuple[bool, Optional[str], Optional[datetime]]:
     """
     验证用户填写 Cookie 的时间
     支持 ISO8601 字符串或时间戳（秒/毫秒）
+    
+    Args:
+        filled_at: 填写时间（ISO8601 字符串或时间戳）
+        field_name: 字段名称（用于错误消息）
+        future_tolerance_seconds: 允许的未来时间容差（默认15分钟，考虑客户端时间偏差）
     
     Returns:
         (is_valid, error_message, parsed_datetime_utc)

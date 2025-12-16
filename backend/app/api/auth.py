@@ -391,8 +391,16 @@ def manual_cookie():
         
         logger.info(f"Cookie 验证成功: user_id={user_id}, nickname={nickname}, avatar={avatar[:50] if avatar else 'None'}...")
         
-        # 检查是否存在同一用户的Cookie（判断是更新还是新增）
-        existing_cookie = Cookie.query.filter_by(user_id=user_id, is_active=True).first() if user_id else None
+        # 检查是否存在同一用户的Cookie（查找所有同用户的记录，不仅仅是激活的）
+        # 优先查找激活的，其次查找最近更新的
+        existing_cookie = None
+        if user_id:
+            existing_cookie = Cookie.query.filter_by(user_id=user_id, is_active=True).first()
+            if not existing_cookie:
+                # 查找同一用户的最近历史记录（用于合并运行时间统计）
+                existing_cookie = Cookie.query.filter_by(user_id=user_id).order_by(Cookie.updated_at.desc()).first()
+                if existing_cookie:
+                    logger.info(f"找到同一用户 {user_id} 的历史Cookie记录 (id={existing_cookie.id})，将合并运行时间统计")
         
         # 将之前的 Cookie 设为非激活
         Cookie.query.update({'is_active': False})
@@ -409,10 +417,10 @@ def manual_cookie():
             existing_cookie.is_valid = True
             existing_cookie.last_checked = datetime.utcnow()
             # 保留原有的 run_start_time、total_run_seconds 等时间统计
-            # 如果之前已失效，重新设置开始时间为现在
+            # 如果之前已失效，重新设置开始时间（优先使用用户提供的 filled_at）
             if not existing_cookie.run_start_time:
-                existing_cookie.run_start_time = datetime.utcnow()
-                logger.info(f"Cookie 之前已失效，重新开始计时")
+                existing_cookie.run_start_time = filled_at_dt if filled_at_dt else datetime.utcnow()
+                logger.info(f"Cookie 之前已失效，重新开始计时 (start_time={existing_cookie.run_start_time})")
             
             cookie = existing_cookie
         else:
@@ -587,8 +595,16 @@ def manual_cookie_encrypted():
         
         logger.info(f"Cookie(加密) 验证成功: user_id={user_id}, nickname={nickname}")
         
-        # 检查是否存在同一用户的Cookie（判断是更新还是新增）
-        existing_cookie = Cookie.query.filter_by(user_id=user_id, is_active=True).first() if user_id else None
+        # 检查是否存在同一用户的Cookie（查找所有同用户的记录，不仅仅是激活的）
+        # 优先查找激活的，其次查找最近更新的
+        existing_cookie = None
+        if user_id:
+            existing_cookie = Cookie.query.filter_by(user_id=user_id, is_active=True).first()
+            if not existing_cookie:
+                # 查找同一用户的最近历史记录（用于合并运行时间统计）
+                existing_cookie = Cookie.query.filter_by(user_id=user_id).order_by(Cookie.updated_at.desc()).first()
+                if existing_cookie:
+                    logger.info(f"找到同一用户 {user_id} 的历史Cookie记录 (id={existing_cookie.id})，将合并运行时间统计")
         
         # 将之前的 Cookie 设为非激活
         Cookie.query.update({'is_active': False})
@@ -605,10 +621,10 @@ def manual_cookie_encrypted():
             existing_cookie.is_valid = True
             existing_cookie.last_checked = datetime.utcnow()
             # 保留原有的 run_start_time、total_run_seconds 等时间统计
-            # 如果之前已失效，重新设置开始时间为现在
+            # 如果之前已失效，重新设置开始时间（优先使用用户提供的 filled_at）
             if not existing_cookie.run_start_time:
-                existing_cookie.run_start_time = datetime.utcnow()
-                logger.info(f"Cookie 之前已失效，重新开始计时")
+                existing_cookie.run_start_time = filled_at_dt if filled_at_dt else datetime.utcnow()
+                logger.info(f"Cookie 之前已失效，重新开始计时 (start_time={existing_cookie.run_start_time})")
             
             cookie = existing_cookie
         else:
@@ -656,12 +672,63 @@ def manual_cookie_encrypted():
         return ApiResponse.error(f'Cookie 验证失败: {str(e)}', 400, 'VALIDATION_FAILED')
 
 
+def cleanup_duplicate_cookies(keep_count: int = 5) -> int:
+    """
+    清理同一用户的重复 Cookie 记录
+    每个用户只保留最近的 keep_count 条记录
+    
+    Args:
+        keep_count: 每个用户保留的最大记录数
+        
+    Returns:
+        删除的记录数
+    """
+    try:
+        from sqlalchemy import func
+        
+        # 获取所有用户ID
+        user_ids = db.session.query(Cookie.user_id).filter(
+            Cookie.user_id.isnot(None),
+            Cookie.user_id != ''
+        ).distinct().all()
+        
+        deleted_count = 0
+        for (user_id,) in user_ids:
+            # 获取该用户的所有 Cookie，按更新时间降序
+            user_cookies = Cookie.query.filter_by(user_id=user_id).order_by(
+                Cookie.updated_at.desc()
+            ).all()
+            
+            # 如果超过保留数量，删除旧的
+            if len(user_cookies) > keep_count:
+                cookies_to_delete = user_cookies[keep_count:]
+                for cookie in cookies_to_delete:
+                    # 不删除激活的 Cookie
+                    if not cookie.is_active:
+                        db.session.delete(cookie)
+                        deleted_count += 1
+        
+        if deleted_count > 0:
+            db.session.commit()
+            logger.info(f"清理了 {deleted_count} 条重复的 Cookie 历史记录")
+        
+        return deleted_count
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"清理 Cookie 历史记录失败: {e}")
+        return 0
+
+
 @auth_bp.route('/cookie/history', methods=['GET'])
 def get_cookie_history():
     """
     获取 Cookie 历史记录
     返回最近的 Cookie 列表（不包含敏感数据）
+    同时自动清理重复记录
     """
+    # 自动清理重复记录（每个用户只保留最近5条）
+    cleanup_duplicate_cookies(keep_count=5)
+    
     cookies = Cookie.query.order_by(Cookie.updated_at.desc()).limit(10).all()
     
     return success_response({
