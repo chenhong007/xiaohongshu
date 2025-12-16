@@ -22,25 +22,33 @@ class ProgressTracker:
     - Heartbeat management
     - Status broadcasting to frontend
     - Batch commit optimization
+    
+    Note:
+    - total_notes: 博主全部笔记数（用于显示）
+    - excluded_count: 被排除的笔记数（>7天且数据完整）
+    - loaded_msgs = excluded_count + processed_count
     """
     
     def __init__(
         self, 
         account: Account,
         total_notes: int,
-        commit_interval: int = 5
+        commit_interval: int = 5,
+        excluded_count: int = 0
     ):
         """Initialize progress tracker.
         
         Args:
             account: Account object to track
-            total_notes: Total number of notes to process
+            total_notes: Total number of notes (all notes from API)
             commit_interval: Commit to DB every N notes (default: 5)
+            excluded_count: Number of excluded notes (>7 days and complete)
         """
         self.account = account
         self.total_notes = total_notes
         self.commit_interval = commit_interval
-        self.processed_count = 0
+        self.excluded_count = excluded_count  # 被排除的笔记数
+        self.processed_count = 0  # 实际处理的笔记数
         self.new_notes_count = 0
         self._last_commit_index = 0
     
@@ -48,7 +56,7 @@ class ProgressTracker:
         """Update progress and broadcast to frontend.
         
         Args:
-            index: Current note index (0-based)
+            index: Current note index (0-based, within notes_to_process)
             new_notes_count: Optional count of new notes discovered
         """
         self.processed_count = index + 1
@@ -56,7 +64,8 @@ class ProgressTracker:
             self.new_notes_count = new_notes_count
         
         # Update account fields
-        self.account.loaded_msgs = self.processed_count
+        # loaded_msgs = 已排除的 + 已处理的
+        self.account.loaded_msgs = self.excluded_count + self.processed_count
         self.account.progress = self._calculate_progress()
         
         # Commit and broadcast at intervals
@@ -70,17 +79,26 @@ class ProgressTracker:
         self._commit_and_broadcast()
     
     def _calculate_progress(self) -> int:
-        """Calculate progress percentage."""
+        """Calculate progress percentage.
+        
+        Progress = (excluded + processed) / total * 100
+        """
         if self.total_notes == 0:
             return 100
-        return int((self.processed_count / self.total_notes) * 100)
+        loaded = self.excluded_count + self.processed_count
+        return int((loaded / self.total_notes) * 100)
     
     def _should_commit(self, index: int) -> bool:
-        """Check if should commit at current index."""
+        """Check if should commit at current index.
+        
+        Note: index is within notes_to_process (total - excluded)
+        """
+        # 需要处理的笔记数 = total - excluded
+        notes_to_process_count = self.total_notes - self.excluded_count
         # Commit at intervals or at the end
         return (
             (index + 1) % self.commit_interval == 0 or
-            index == self.total_notes - 1
+            index == notes_to_process_count - 1
         )
     
     def _commit_and_broadcast(self) -> None:

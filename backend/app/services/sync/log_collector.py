@@ -309,20 +309,39 @@ class SyncLogCollector:
             summary.update(recalculated_counts)
             summary['unique_problem_notes'] = len(problem_note_ids)
             
-            # 验证统计数据一致性：total 应该等于 success + skipped + unique_problem_notes
-            total = summary.get('total', 0)
+            # 计算同步耗时和平均时间
+            try:
+                from datetime import datetime as dt
+                start_dt = dt.fromisoformat(self.start_time.replace('Z', '+00:00'))
+                end_dt = dt.fromisoformat(self.end_time.replace('Z', '+00:00'))
+                duration_seconds = (end_dt - start_dt).total_seconds()
+                summary['duration_seconds'] = round(duration_seconds, 1)
+                
+                # 平均时间 = 同步总时间 / 实际需要同步的笔记数
+                need_sync = summary.get('need_sync', 0)
+                if need_sync > 0:
+                    summary['avg_time_per_note'] = round(duration_seconds / need_sync, 2)
+                else:
+                    summary['avg_time_per_note'] = 0
+            except Exception as e:
+                logger.warning(f"Failed to calculate duration: {e}")
+                summary['duration_seconds'] = 0
+                summary['avg_time_per_note'] = 0
+            
+            # 验证统计数据一致性：need_sync 应该等于 success + skipped + unique_problem_notes
+            need_sync = summary.get('need_sync', 0)
             success = summary.get('success', 0)
             skipped = summary.get('skipped', 0)
             problems = len(problem_note_ids)
-            calculated_total = success + skipped + problems
+            calculated_need_sync = success + skipped + problems
             
-            if total != calculated_total:
+            if need_sync > 0 and need_sync != calculated_need_sync:
                 from ...utils.logger import get_logger
                 logger = get_logger('log_collector')
                 logger.warning(
                     f"Statistics mismatch detected! "
-                    f"total={total}, but success({success}) + skipped({skipped}) + problems({problems}) = {calculated_total}. "
-                    f"Difference: {total - calculated_total}"
+                    f"need_sync={need_sync}, but success({success}) + skipped({skipped}) + problems({problems}) = {calculated_need_sync}. "
+                    f"Difference: {need_sync - calculated_need_sync}"
                 )
             
             # Build final log data

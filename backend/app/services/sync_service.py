@@ -823,8 +823,14 @@ class SyncService:
                 existing_note_ids_cache = set(existing_notes_cache.keys())
                 logger.debug(f"[Cache] Pre-loaded {len(existing_note_ids_cache)}/{len(all_note_ids)} existing notes")
                 
+                # 博主全部笔记数（用于显示）
+                total_all_notes = len(all_note_info)
+                
                 # Filter notes for deep sync using NoteValidator
                 # Pre-sync validation: identify which notes need to be fetched
+                excluded_count = 0  # 排除的笔记数（>7天且数据完整）
+                notes_to_process = all_note_info  # 默认处理全部
+                
                 if sync_mode == 'deep':
                     # Create validator for this account
                     deep_validator = DeepSyncValidator(acc_id, account.user_id)
@@ -839,7 +845,6 @@ class SyncService:
                     
                     # Filter notes based on validation
                     filtered_notes = []
-                    excluded_count = 0  # 排除的笔记数（不计入分母）
                     
                     for note in all_note_info:
                         note_id = note.get('note_id') or note.get('id')
@@ -858,43 +863,54 @@ class SyncService:
                             if reasons:
                                 logger.debug(f"Note {note_id} needs sync: {', '.join(reasons)}")
                         else:
-                            # 数据完整，不需要处理，不计入分母
+                            # 数据完整，不需要处理
                             excluded_count += 1
                             logger.debug(f"Note {note_id} is old (>7 days) and complete, excluding from sync")
                     
+                    notes_to_process = filtered_notes
+                    
                     if excluded_count > 0:
-                        logger.info(f"Excluded {excluded_count} old completed notes from deep sync (not counted in total)")
+                        logger.info(f"Excluded {excluded_count} old completed notes from deep sync")
                         sync_log_broadcaster.info(
-                            f"已排除 {excluded_count} 条数据完整的旧笔记",
+                            f"已排除 {excluded_count} 条数据完整的旧笔记（超过7天且数据完整）",
                             account_id=acc_id,
                             account_name=account_name,
-                            extra={'excluded_count': excluded_count}
+                            extra={'excluded_count': excluded_count, 'total': total_all_notes}
                         )
-                        all_note_info = filtered_notes
 
-                total = len(all_note_info)
-                account.total_msgs = total
-                account.loaded_msgs = 0 
+                # 需要实际同步的笔记数
+                need_sync_count = len(notes_to_process)
+                
+                # total_msgs 显示博主全部笔记数，而不是需要同步的数量
+                account.total_msgs = total_all_notes
+                account.loaded_msgs = excluded_count  # 被排除的笔记算作已处理
                 db.session.commit()
                 
                 sync_log_broadcaster.info(
-                    f"Got {total} notes",
+                    f"共 {total_all_notes} 条笔记，需同步 {need_sync_count} 条",
                     account_id=acc_id,
                     account_name=account_name,
-                    extra={'total': total}
+                    extra={'total': total_all_notes, 'need_sync': need_sync_count, 'excluded': excluded_count}
                 )
                 
                 if sync_log:
-                    sync_log.set_total(total)
+                    sync_log.set_total(total_all_notes)
+                    sync_log.set_need_sync(need_sync_count)
+                    sync_log.record_excluded(excluded_count)
                 
-                # Initialize progress tracker
-                progress_tracker = ProgressTracker(account, total, commit_interval=5)
+                # Initialize progress tracker with total notes count and excluded count
+                progress_tracker = ProgressTracker(
+                    account, 
+                    total_all_notes, 
+                    commit_interval=5,
+                    excluded_count=excluded_count
+                )
                 
                 # Batch buffer for fast sync
                 FAST_SYNC_BATCH_SIZE = 20
                 fast_sync_batch = []
                 
-                for idx, simple_note in enumerate(all_note_info):
+                for idx, simple_note in enumerate(notes_to_process):
                     if SyncService._stop_event.is_set():
                         break
 
@@ -1097,14 +1113,14 @@ class SyncService:
                 if not SyncService._stop_event.is_set():
                     account.status = 'completed'
                     account.progress = 100
-                    account.loaded_msgs = total
+                    account.loaded_msgs = total_all_notes  # 全部笔记数（包括排除的）
                     account.last_sync = datetime.utcnow()
                     account.sync_heartbeat = None
                     
                     # Post-sync validation for deep sync
                     if sync_mode == 'deep' and 'deep_validator' in locals():
                         try:
-                            # Re-fetch notes from database for validation
+                            # Re-fetch notes from database for validation (use original all_note_info)
                             all_note_ids_for_validation = [n.get('note_id') or n.get('id') for n in all_note_info]
                             synced_notes = Note.query.filter(Note.note_id.in_(all_note_ids_for_validation)).all()
                             
