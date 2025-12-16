@@ -616,11 +616,11 @@ class SyncService:
                 user_url = token_mgr.build_user_url(account.user_id, xsec_token)
                 
                 if not xsec_token:
-                    warning_msg = "Failed to get user xsec_token, sync may fail"
+                    warning_msg = "无法获取用户 xsec_token，同步可能失败"
                     logger.warning(f"Failed to fetch xsec_token for account {account.user_id}")
                     sync_log_broadcaster.warn(warning_msg, account_id=acc_id, account_name=account_name)
                     if sync_mode == 'deep':
-                        error_msg = "Deep sync requires valid xsec_token, please re-login"
+                        error_msg = "深度同步需要有效的 xsec_token。请检查：1) Cookie 是否有效（重新登录）2) 网络是否正常 3) 小红书是否有访问限制"
                         sync_log_broadcaster.error(error_msg, account_id=acc_id, account_name=account_name)
                         account.status = 'failed'
                         account.error_message = error_msg

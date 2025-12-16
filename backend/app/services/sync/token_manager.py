@@ -109,7 +109,9 @@ class XsecTokenManager:
     def refresh_user_token(self, user_id: str) -> str:
         """强制刷新用户的 xsec_token
         
-        通过搜索用户昵称来获取新的 xsec_token
+        获取策略（按优先级）：
+        1. 从主页推荐（homefeed）获取通用 xsec_token
+        2. 通过搜索用户昵称获取特定用户的 xsec_token
         
         Args:
             user_id: 用户 ID
@@ -120,6 +122,114 @@ class XsecTokenManager:
         if not user_id or not self._xhs_apis:
             return ''
         
+        # 策略1: 从主页推荐获取通用 xsec_token
+        # 主页推荐返回的笔记中包含 xsec_token，这个 token 通常可以用于访问其他用户的笔记
+        token = self._get_token_from_homefeed()
+        if token:
+            with self._lock:
+                self._token_cache[user_id] = TokenInfo(
+                    token=token,
+                    fetch_time=time.time(),
+                    use_count=0
+                )
+            logger.debug(f"Fetched xsec_token for user {user_id} via homefeed")
+            return token
+        
+        # 策略2: 通过搜索用户昵称获取 xsec_token（备选方案）
+        token = self._get_token_from_user_search(user_id)
+        if token:
+            with self._lock:
+                self._token_cache[user_id] = TokenInfo(
+                    token=token,
+                    fetch_time=time.time(),
+                    use_count=0
+                )
+            logger.debug(f"Fetched xsec_token for user {user_id} via search")
+            return token
+        
+        logger.warning(f"Failed to fetch xsec_token for user {user_id} via all methods")
+        return ''
+    
+    def _get_token_from_homefeed(self) -> str:
+        """从主页推荐获取 xsec_token
+        
+        主页推荐返回的笔记中包含有效的 xsec_token，这是最可靠的获取方式。
+        
+        Returns:
+            xsec_token 字符串，获取失败返回空字符串
+        """
+        try:
+            # 获取主页推荐的笔记（只需要1个笔记即可获取 token）
+            success, msg, res_json = self._xhs_apis.get_homefeed_recommend(
+                category='homefeed_recommend',  # 推荐频道
+                cursor_score='',
+                refresh_type=1,  # 首次刷新
+                note_index=0,
+                cookies_str=self._cookie_str
+            )
+            
+            if not success or not res_json:
+                logger.debug(f"Failed to get homefeed: {msg}")
+                return ''
+            
+            # 从返回的笔记中提取 xsec_token
+            items = res_json.get('data', {}).get('items', [])
+            for item in items:
+                # 尝试从笔记的不同位置获取 xsec_token
+                xsec_token = (
+                    item.get('xsec_token') or
+                    item.get('note_card', {}).get('xsec_token') or
+                    item.get('id', '') and self._extract_token_from_item(item)
+                )
+                if xsec_token:
+                    logger.debug(f"Got xsec_token from homefeed item")
+                    return xsec_token
+            
+            logger.debug("No xsec_token found in homefeed items")
+            
+        except Exception as e:
+            logger.debug(f"Exception getting token from homefeed: {e}")
+        
+        return ''
+    
+    def _extract_token_from_item(self, item: Dict) -> str:
+        """从推荐项中提取 xsec_token
+        
+        Args:
+            item: 推荐项数据
+            
+        Returns:
+            xsec_token 字符串
+        """
+        # 尝试多种可能的字段路径
+        paths = [
+            ('xsec_token',),
+            ('note_card', 'xsec_token'),
+            ('track_id',),  # 有时 track_id 可以作为 token
+        ]
+        
+        for path in paths:
+            value = item
+            for key in path:
+                if isinstance(value, dict):
+                    value = value.get(key)
+                else:
+                    value = None
+                    break
+            if value and isinstance(value, str) and len(value) > 10:
+                return value
+        
+        return ''
+    
+    def _get_token_from_user_search(self, user_id: str) -> str:
+        """通过搜索用户昵称获取 xsec_token（备选方案）
+        
+        Args:
+            user_id: 用户 ID
+            
+        Returns:
+            xsec_token 字符串，获取失败返回空字符串
+        """
         try:
             # 获取用户信息以获取昵称
             success_info, msg_info, user_info = self._xhs_apis.get_user_info(
@@ -131,7 +241,9 @@ class XsecTokenManager:
                 return ''
             
             # 提取昵称
-            basic_info = user_info.get('basic_info', {})
+            basic_info = user_info.get('data', {}).get('basic_info', {})
+            if not basic_info:
+                basic_info = user_info.get('basic_info', {})
             nickname = basic_info.get('nickname') or user_info.get('nickname', '')
             
             if not nickname:
@@ -159,20 +271,12 @@ class XsecTokenManager:
                 if found_user_id == user_id:
                     xsec_token = user.get('xsec_token', '')
                     if xsec_token:
-                        # 更新缓存
-                        with self._lock:
-                            self._token_cache[user_id] = TokenInfo(
-                                token=xsec_token,
-                                fetch_time=time.time(),
-                                use_count=0
-                            )
-                        logger.debug(f"Fetched xsec_token for user {user_id} via search")
                         return xsec_token
             
             logger.debug(f"User {user_id} not found in search results")
             
         except Exception as e:
-            logger.debug(f"Exception fetching xsec_token for user {user_id}: {e}")
+            logger.debug(f"Exception searching user {user_id}: {e}")
         
         return ''
     
