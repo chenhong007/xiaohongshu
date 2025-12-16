@@ -73,7 +73,9 @@ class SyncLogCollector:
         self.end_time: Optional[str] = None
         self.issues: List[Dict] = []
         self.summary = {
-            'total': 0,           # Total notes
+            'total': 0,           # Total notes (all notes from API)
+            'need_sync': 0,       # Notes that need to sync (total - excluded)
+            'excluded': 0,        # Excluded notes (>7 days and data complete)
             'success': 0,         # Successfully processed
             'new_notes': 0,       # Newly added notes (not existed before)
             'rate_limited': 0,    # Rate limit count (unique notes)
@@ -82,7 +84,7 @@ class SyncLogCollector:
             'fetch_failed': 0,    # Fetch failures
             'token_refresh': 0,   # Token refresh count
             'media_failed': 0,    # Media download failures
-            'skipped': 0,         # Skipped (already complete)
+            'skipped': 0,         # Skipped (already complete within processing)
         }
         # Pre/Post validation results
         self.pre_validation: Optional[Dict] = None
