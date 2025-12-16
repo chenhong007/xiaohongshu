@@ -403,7 +403,7 @@ class CookieService:
             'user_id': cookie.user_id,
             'nickname': cookie.nickname,
             'avatar': cookie.avatar,
-            'last_checked': cookie.last_checked.isoformat() if cookie.last_checked else None,
+            'last_checked': (cookie.last_checked.isoformat() + 'Z') if cookie.last_checked else None,
             'run_info': cookie.get_run_info() if hasattr(cookie, 'get_run_info') else None,
         }
 

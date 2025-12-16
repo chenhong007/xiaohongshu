@@ -94,7 +94,7 @@ class Note(db.Model):
             'cover_remote': self.cover_remote,
             'cover_local': self.cover_local,
             'xsec_token': self.xsec_token,
-            'last_updated': self.last_updated.isoformat() if self.last_updated else None,
+            'last_updated': (self.last_updated.isoformat() + 'Z') if self.last_updated else None,
         }
     
     def __repr__(self):

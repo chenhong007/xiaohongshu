@@ -131,7 +131,7 @@ def get_current_user():
                 'user_id': cookie.user_id,
                 'nickname': cookie.nickname,
                 'avatar': cookie.avatar,
-                'last_checked': cookie.last_checked.isoformat() if cookie.last_checked else None,
+                'last_checked': (cookie.last_checked.isoformat() + 'Z') if cookie.last_checked else None,
                 'is_secure': crypto.is_secure,  # 告知前端是否安全存储
                 'run_info': run_info,
             })
@@ -337,7 +337,7 @@ def check_cookie():
     return success_response({
         'is_valid': is_valid,
         'message': 'Cookie 有效' if is_valid else 'Cookie 已失效',
-        'last_checked': cookie.last_checked.isoformat() if cookie.last_checked else None
+        'last_checked': (cookie.last_checked.isoformat() + 'Z') if cookie.last_checked else None
     })
 
 
@@ -657,7 +657,7 @@ def debug_cookie():
                 'avatar': cookie.avatar,
                 'is_active': cookie.is_active,
                 'is_valid': cookie.is_valid,
-                'last_checked': cookie.last_checked.isoformat() if cookie.last_checked else None,
+                'last_checked': (cookie.last_checked.isoformat() + 'Z') if cookie.last_checked else None,
                 'run_info': cookie.get_run_info(),
             },
             'selfinfo_v1': {

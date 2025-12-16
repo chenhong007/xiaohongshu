@@ -139,20 +139,25 @@ class Cookie(db.Model):
     def get_run_info(self) -> dict:
         """
         获取运行时长信息
+        
+        返回的时间字符串带有 UTC 时区标识 'Z'，便于前端正确转换为本地时间
         """
         current_seconds = self.get_current_run_seconds()
+        # 添加 'Z' 后缀表示 UTC 时区，确保前端能正确解析
         return {
-            'run_start_time': self.run_start_time.isoformat() if self.run_start_time else None,
+            'run_start_time': (self.run_start_time.isoformat() + 'Z') if self.run_start_time else None,
             'current_run_seconds': current_seconds,
             'total_run_seconds': self.total_run_seconds + (current_seconds if self.is_valid else 0),
             'last_valid_duration': self.last_valid_duration,
-            'invalidated_at': self.invalidated_at.isoformat() if self.invalidated_at else None,
+            'invalidated_at': (self.invalidated_at.isoformat() + 'Z') if self.invalidated_at else None,
             'is_running': self.is_valid and self.run_start_time is not None,
         }
     
     def to_dict(self):
         """
         转换为字典（不包含敏感的 Cookie 字符串）
+        
+        所有时间字段都带有 UTC 时区标识 'Z'
         """
         run_info = self.get_run_info()
         return {
@@ -162,8 +167,8 @@ class Cookie(db.Model):
             'avatar': self.avatar,
             'is_active': self.is_active,
             'is_valid': self.is_valid,
-            'created_at': self.created_at.isoformat() if self.created_at else None,
-            'last_checked': self.last_checked.isoformat() if self.last_checked else None,
+            'created_at': (self.created_at.isoformat() + 'Z') if self.created_at else None,
+            'last_checked': (self.last_checked.isoformat() + 'Z') if self.last_checked else None,
             'has_encrypted': bool(self.encrypted_cookie),  # 指示是否加密存储
             # 运行时长信息
             **run_info,

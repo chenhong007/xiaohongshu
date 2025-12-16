@@ -459,8 +459,8 @@ class SyncStateManager:
                 'total': self._total,
                 'new_notes': self._new_notes,
                 'error_message': self._error_message,
-                'start_time': self._start_time.isoformat() if self._start_time else None,
-                'end_time': self._end_time.isoformat() if self._end_time else None,
+                'start_time': (self._start_time.isoformat() + 'Z') if self._start_time else None,
+                'end_time': (self._end_time.isoformat() + 'Z') if self._end_time else None,
             }
 
 
