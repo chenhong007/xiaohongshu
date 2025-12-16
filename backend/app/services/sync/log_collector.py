@@ -179,8 +179,14 @@ class SyncLogCollector:
     
     def record_new_note(self) -> None:
         """Record a newly added note (convenience method for batch saves)."""
+        self.record_new_notes(1)
+    
+    def record_new_notes(self, count: int) -> None:
+        """Record multiple newly added notes at once."""
+        if count <= 0:
+            return
         with self._lock:
-            self.summary['new_notes'] += 1
+            self.summary['new_notes'] += count
     
     def get_new_notes_count(self) -> int:
         """Get current count of newly added notes.

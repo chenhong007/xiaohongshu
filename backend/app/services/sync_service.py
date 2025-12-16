@@ -162,9 +162,11 @@ class SyncService:
                     f"status abnormal{heartbeat_info}, marking as failed"
                 )
                 
-                account.status = 'failed'
-                account.error_message = "Sync task terminated abnormally (heartbeat timeout), please restart sync"
-                account.sync_heartbeat = None
+                SyncService._fail_single_account(
+                    account,
+                    "Sync task terminated abnormally (heartbeat timeout), please restart sync",
+                    commit=False
+                )
                 cleaned_count += 1
             
             if cleaned_count > 0:
@@ -222,6 +224,30 @@ class SyncService:
         Note: This is a wrapper around batch_mark_failed for backward compatibility.
         """
         batch_mark_failed(account_ids, message)
+    
+    @staticmethod
+    def _fail_accounts(account_ids: List[int], message: str, extra_fields: Optional[Dict[str, Any]] = None) -> None:
+        """统一标记一批账号为失败状态."""
+        if not account_ids:
+            return
+        
+        update_data = {
+            'status': SyncStateManager.STATUS_FAILED,
+            'error_message': message,
+            'sync_heartbeat': None
+        }
+        if extra_fields:
+            update_data.update(extra_fields)
+        
+        try:
+            Account.query.filter(Account.id.in_(account_ids)).update(
+                update_data,
+                synchronize_session=False
+            )
+            db.session.commit()
+        except Exception as e:
+            logger.error(f"Failed to mark accounts {account_ids} as failed: {e}")
+            db.session.rollback()
     
     @staticmethod
     def stop_sync() -> None:
@@ -441,6 +467,12 @@ class SyncService:
         
         logger.debug(f"[AdaptiveDelay] Sleeping for {delay:.1f}s")
         time.sleep(delay)
+    
+    @staticmethod
+    def _ensure_note_token(note_data: Dict[str, Any], note_token: Optional[str]) -> None:
+        """确保列表API返回的笔记字典携带最新的xsec_token."""
+        if note_token:
+            note_data['xsec_token'] = note_token
 
     @staticmethod
     def check_cookie_valid() -> Tuple[bool, str]:
@@ -516,11 +548,7 @@ class SyncService:
         """Main sync logic for account notes."""
         if not SPIDER_AVAILABLE:
             logger.error("Spider_XHS module not available")
-            Account.query.filter(Account.id.in_(account_ids)).update(
-                {'status': 'failed', 'error_message': 'Spider module not available'},
-                synchronize_session=False
-            )
-            db.session.commit()
+            SyncService._fail_accounts(account_ids, 'Spider module not available')
             return
             
         logger.info(f"Starting sync: {account_ids}, mode: {sync_mode}")
@@ -531,11 +559,7 @@ class SyncService:
         cookie_str = SyncService.get_cookie_str()
         if not cookie_str:
             logger.error("No valid Cookie found")
-            Account.query.filter(Account.id.in_(account_ids)).update(
-                {'status': 'failed', 'error_message': 'No valid Cookie, please login first'},
-                synchronize_session=False
-            )
-            db.session.commit()
+            SyncService._fail_accounts(account_ids, 'No valid Cookie, please login first')
             return
         
         try:
@@ -544,11 +568,7 @@ class SyncService:
         except Exception as e:
             error_msg = f"Failed to initialize API: {e}"
             logger.error(f"Failed to initialize XHS APIs: {e}")
-            Account.query.filter(Account.id.in_(account_ids)).update(
-                {'status': 'failed', 'error_message': error_msg},
-                synchronize_session=False
-            )
-            db.session.commit()
+            SyncService._fail_accounts(account_ids, error_msg)
             return
         
         # Create log collectors for all sync modes (to track sync type)
@@ -791,11 +811,9 @@ class SyncService:
 
                     note_id = simple_note.get('note_id') or simple_note.get('id')
                     note_xsec_token = simple_note.get('xsec_token', '')
-                    if note_xsec_token:
-                        note_url = f"https://www.xiaohongshu.com/explore/{note_id}?xsec_token={note_xsec_token}&xsec_source=pc_search"
-                    else:
+                    if not note_xsec_token:
                         logger.warning(f"Note {note_id} missing xsec_token")
-                        note_url = f"https://www.xiaohongshu.com/explore/{note_id}"
+                    SyncService._ensure_note_token(simple_note, note_xsec_token)
                     
                     # Determine if detail fetch is needed (using helper)
                     existing_note = existing_notes_cache.get(note_id)
@@ -811,9 +829,6 @@ class SyncService:
                     if not need_fetch_detail:
                         # Quick update from list data (using helper)
                         try:
-                            if note_xsec_token:
-                                simple_note['xsec_token'] = note_xsec_token
-                            
                             # Process quick update
                             cleaned_data = NoteProcessingHelper.process_quick_update(
                                 note_data=simple_note,
@@ -848,8 +863,7 @@ class SyncService:
                                         logger.debug(f"[FastSync] Batch saved {len(fast_sync_batch)}: {inserted} new, {updated} updated")
                                         # 记录新增笔记数量
                                         if sync_log and inserted > 0:
-                                            for _ in range(inserted):
-                                                sync_log.record_new_note()
+                                            sync_log.record_new_notes(inserted)
                                     except Exception as e:
                                         logger.error(f"[FastSync] Batch save failed: {e}")
                                     fast_sync_batch = []
@@ -940,9 +954,6 @@ class SyncService:
                                 )
                             
                             try:
-                                if note_xsec_token:
-                                    simple_note['xsec_token'] = note_xsec_token
-                                
                                 cleaned_data = NoteDataConverter.convert_from_list_api(
                                     simple_note, 
                                     user_id=account.user_id,
@@ -977,8 +988,7 @@ class SyncService:
                         logger.debug(f"[FastSync] Final batch: {inserted} new, {updated} updated")
                         # 记录新增笔记数量
                         if sync_log and inserted > 0:
-                            for _ in range(inserted):
-                                sync_log.record_new_note()
+                            sync_log.record_new_notes(inserted)
                     except Exception as e:
                         logger.error(f"[FastSync] Final batch save failed: {e}")
                 
@@ -1049,10 +1059,9 @@ class SyncService:
                         sync_log_broadcaster.broadcast_completed(acc_id, 'completed')
                 else:
                     if account.status == 'processing':
-                        account.status = 'failed'
                         mode_name = 'deep sync' if sync_mode == 'deep' else 'fast sync'
-                        account.error_message = account.error_message or f"User stopped {mode_name}"
-                        account.sync_heartbeat = None
+                        cancel_msg = account.error_message or f"User stopped {mode_name}"
+                        SyncService._fail_single_account(account, cancel_msg, commit=False)
                         sync_log_broadcaster.broadcast_completed(acc_id, 'cancelled')
                     if sync_log:
                         sync_log.save_to_db()
@@ -1070,20 +1079,35 @@ class SyncService:
                 try:
                     account = Account.query.get(acc_id)
                     if account:
-                        account.status = 'failed'
-                        account.error_message = f"Sync error: {str(e)}"
-                        account.sync_heartbeat = None
+                        error_msg = f"Sync error: {str(e)}"
+                        extra_fields = None
                         if sync_log:
                             sync_log.add_issue(
                                 SyncLogCollector.TYPE_FETCH_FAILED,
-                                message=f"Sync error: {str(e)}"
+                                message=error_msg
                             )
                             logs_data = sync_log.finalize()
-                            account.sync_logs = json.dumps(logs_data, ensure_ascii=False)
-                        db.session.commit()
+                            extra_fields = {'sync_logs': json.dumps(logs_data, ensure_ascii=False)}
+                        SyncService._fail_single_account(account, error_msg, extra_fields=extra_fields)
                 except Exception as inner_e:
                     logger.error(f"Error updating account status: {inner_e}")
                     db.session.rollback()
+    
+    @staticmethod
+    def _submit_cover_download(cover_url: str, note_id: str) -> None:
+        """统一封面下载提交逻辑，便于被批量/单条保存复用."""
+        if not cover_url or not note_id:
+            return
+        queue = get_media_download_queue()
+        queue.submit_cover_download(cover_url, note_id, callback=SyncService._update_cover_local)
+    
+    @staticmethod
+    def _submit_media_download(note_id: str, data: Dict) -> None:
+        """统一媒体下载提交逻辑，便于被复用."""
+        if not note_id or not data:
+            return
+        queue = get_media_download_queue()
+        queue.submit_media_download(note_id, data)
     
     @staticmethod
     def _bulk_save_notes(
@@ -1103,15 +1127,10 @@ class SyncService:
         Returns:
             Tuple of (inserted_count, updated_count)
         """
-        def cover_callback(cover_url: str, note_id: str):
-            """Submit cover download to async queue."""
-            queue = get_media_download_queue()
-            queue.submit_cover_download(cover_url, note_id, callback=SyncService._update_cover_local)
-        
         return NotePersistenceService.bulk_save(
             notes_data=notes_data_list,
             existing_cache=existing_notes_cache,
-            cover_callback=cover_callback
+            cover_callback=SyncService._submit_cover_download
         )
     
     @staticmethod
@@ -1125,22 +1144,12 @@ class SyncService:
             download_media: Whether to download media files
             auto_commit: Whether to auto-commit transaction
         """
-        def cover_callback(cover_url: str, note_id: str):
-            """Submit cover download to async queue."""
-            queue = get_media_download_queue()
-            queue.submit_cover_download(cover_url, note_id, callback=SyncService._update_cover_local)
-        
-        def media_callback(note_id: str, data: Dict):
-            """Submit media download to async queue."""
-            queue = get_media_download_queue()
-            queue.submit_media_download(note_id, data)
-        
         NotePersistenceService.save_single(
             note_data=note_data,
             download_media=download_media,
             auto_commit=auto_commit,
-            cover_callback=cover_callback,
-            media_callback=media_callback
+            cover_callback=SyncService._submit_cover_download,
+            media_callback=SyncService._submit_media_download
         )
     
     @staticmethod

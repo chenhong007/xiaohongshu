@@ -36,6 +36,26 @@ class NoteDataConverter:
                                'comment_count', 'share_count']
     
     @staticmethod
+    def ensure_token(note_data: Dict[str, Any], token: Optional[str] = None) -> Dict[str, Any]:
+        """确保笔记数据携带 xsec_token
+        
+        统一的 token 注入入口，消除 sync_service 中的重复逻辑。
+        所有路径（快速更新、详情保存、fallback）都应通过此方法确保 token 存在。
+        
+        Args:
+            note_data: 笔记数据字典（会被原地修改）
+            token: 可选的外部 token 值，如果提供则优先使用
+            
+        Returns:
+            修改后的 note_data（便于链式调用）
+        """
+        # 优先使用外部传入的 token，否则保留原有 token
+        effective_token = token or note_data.get('xsec_token', '')
+        if effective_token:
+            note_data['xsec_token'] = effective_token
+        return note_data
+    
+    @staticmethod
     def parse_count(value: Any) -> int:
         """解析计数值，支持中文单位格式
         
