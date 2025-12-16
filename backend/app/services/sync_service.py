@@ -802,6 +802,67 @@ class SyncService:
                 except Exception as e:
                     logger.warning(f"Failed to update user info for {account.user_id}: {e}")
                 
+                # Pre-cache existing notes
+                all_note_ids = [n.get('note_id') or n.get('id') for n in all_note_info]
+                existing_notes_query = Note.query.filter(Note.note_id.in_(all_note_ids)).all()
+                existing_notes_cache = {n.note_id: n for n in existing_notes_query}
+                existing_note_ids_cache = set(existing_notes_cache.keys())
+                logger.debug(f"[Cache] Pre-loaded {len(existing_note_ids_cache)}/{len(all_note_ids)} existing notes")
+                
+                # Filter notes for deep sync (skip old completed notes - they don't count in denominator)
+                if sync_mode == 'deep':
+                    filtered_notes = []
+                    excluded_count = 0  # 排除的笔记数（不计入分母）
+                    for note in all_note_info:
+                        note_id = note.get('note_id') or note.get('id')
+                        
+                        # Check if note is old (>7 days)
+                        is_old_note = False
+                        upload_time_str = note.get('upload_time') or ''
+                        if upload_time_str:
+                            try:
+                                if isinstance(upload_time_str, (int, float)):
+                                    upload_dt = datetime.fromtimestamp(upload_time_str)
+                                elif isinstance(upload_time_str, str):
+                                    for fmt in ['%Y-%m-%d %H:%M:%S', '%Y-%m-%d', '%Y/%m/%d %H:%M:%S', '%Y/%m/%d']:
+                                        try:
+                                            upload_dt = datetime.strptime(upload_time_str, fmt)
+                                            break
+                                        except ValueError:
+                                            continue
+                                    else:
+                                        upload_dt = None
+                                else:
+                                    upload_dt = None
+                                
+                                if upload_dt:
+                                    age_days = (datetime.utcnow() - upload_dt).total_seconds() / 86400
+                                    is_old_note = age_days > 7
+                            except Exception:
+                                pass
+                        
+                        existing_note = existing_notes_cache.get(note_id)
+                        should_include = True  # 是否计入分母
+                        
+                        if is_old_note and existing_note:
+                            # 超过7天的旧笔记：检查是否数据完整
+                            missing_fields = SyncService._get_missing_required_fields(existing_note)
+                            if not missing_fields:
+                                # 数据完整，不需要处理，不计入分母
+                                should_include = False
+                                logger.debug(f"Note {note_id} is old (>7 days) and complete, excluding from sync")
+                        # 新笔记（无论新旧）都需要处理，计入分母
+                        # 旧笔记但数据不完整也需要处理，计入分母
+                            
+                        if should_include:
+                            filtered_notes.append(note)
+                        else:
+                            excluded_count += 1
+                    
+                    if excluded_count > 0:
+                        logger.info(f"Excluded {excluded_count} old completed notes from deep sync (not counted in total)")
+                        all_note_info = filtered_notes
+
                 total = len(all_note_info)
                 account.total_msgs = total
                 account.loaded_msgs = 0 
@@ -817,12 +878,6 @@ class SyncService:
                 if sync_log:
                     sync_log.set_total(total)
                 
-                # Pre-cache existing notes
-                all_note_ids = [n.get('note_id') or n.get('id') for n in all_note_info]
-                existing_notes_query = Note.query.filter(Note.note_id.in_(all_note_ids)).all()
-                existing_notes_cache = {n.note_id: n for n in existing_notes_query}
-                existing_note_ids_cache = set(existing_notes_cache.keys())
-                logger.debug(f"[Cache] Pre-loaded {len(existing_note_ids_cache)}/{len(all_note_ids)} existing notes")
                 
                 # Batch buffer for fast sync
                 FAST_SYNC_BATCH_SIZE = 20
@@ -843,51 +898,17 @@ class SyncService:
                     need_fetch_detail = False
                     
                     if sync_mode == 'deep':
-                        # 检查笔记是否超过7天
-                        is_old_note = False
-                        upload_time_str = simple_note.get('upload_time') or ''
-                        if upload_time_str:
-                            try:
-                                # 尝试解析upload_time，可能是时间戳或日期字符串
-                                if isinstance(upload_time_str, (int, float)):
-                                    upload_dt = datetime.fromtimestamp(upload_time_str)
-                                elif isinstance(upload_time_str, str):
-                                    # 尝试多种日期格式
-                                    for fmt in ['%Y-%m-%d %H:%M:%S', '%Y-%m-%d', '%Y/%m/%d %H:%M:%S', '%Y/%m/%d']:
-                                        try:
-                                            upload_dt = datetime.strptime(upload_time_str, fmt)
-                                            break
-                                        except ValueError:
-                                            continue
-                                    else:
-                                        upload_dt = None
-                                else:
-                                    upload_dt = None
-                                
-                                if upload_dt:
-                                    age_days = (datetime.utcnow() - upload_dt).total_seconds() / 86400
-                                    is_old_note = age_days > 7
-                                    if is_old_note:
-                                        logger.debug(f"Note {note_id} is {age_days:.1f} days old, skip detail fetch")
-                            except Exception as e:
-                                logger.debug(f"Failed to parse upload_time for note {note_id}: {e}")
-                        
+                        # 笔记已经在预处理阶段过滤过了，这里只需要判断是否需要获取详情
                         existing_note = existing_notes_cache.get(note_id)
                         if not existing_note:
-                            # 新笔记：如果超过7天，不进入详情页
-                            if not is_old_note:
-                                need_fetch_detail = True
-                            else:
-                                logger.debug(f"Note {note_id} is old (>7 days), skip detail for new note")
+                            # 新笔记：需要获取详情
+                            need_fetch_detail = True
                         else:
-                            # 已存在的笔记：如果超过7天，不进入详情页
-                            if not is_old_note:
-                                missing_fields = SyncService._get_missing_required_fields(existing_note)
-                                if missing_fields:
-                                    need_fetch_detail = True
-                                    logger.debug(f"Note {note_id} missing fields: {missing_fields}")
-                            else:
-                                logger.debug(f"Note {note_id} is old (>7 days), skip detail check")
+                            # 已存在的笔记：检查是否有缺失字段
+                            missing_fields = SyncService._get_missing_required_fields(existing_note)
+                            if missing_fields:
+                                need_fetch_detail = True
+                                logger.debug(f"Note {note_id} missing fields: {missing_fields}")
 
                     if not need_fetch_detail:
                         # Quick update from list data

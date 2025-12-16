@@ -90,7 +90,7 @@ export const ActionBar = ({
             </>
           ) : (
             <>
-              <StopCircle className="w-4 h-4" /> Stop Sync
+              <StopCircle className="w-4 h-4" /> 停止同步
             </>
           )}
         </button>

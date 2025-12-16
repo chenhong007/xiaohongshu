@@ -57,8 +57,11 @@ const SummaryCards = ({ summary }) => {
       total
     );
   
+  // 计算未处理数
+  const unprocessed = Math.max(0, total - (summary.success || 0) - (summary.skipped || 0) - problemCount);
+  
   return (
-    <div className="grid grid-cols-4 gap-3">
+    <div className={`grid ${unprocessed > 0 ? 'grid-cols-5' : 'grid-cols-4'} gap-3`}>
       <div className="bg-blue-50 rounded-lg p-3 text-center">
         <div className="text-2xl font-bold text-blue-600">{total}</div>
         <div className="text-xs text-blue-600">总数</div>
@@ -75,6 +78,12 @@ const SummaryCards = ({ summary }) => {
         <div className="text-2xl font-bold text-yellow-600">{problemCount}</div>
         <div className="text-xs text-yellow-600">问题</div>
       </div>
+      {unprocessed > 0 && (
+        <div className="bg-red-50 rounded-lg p-3 text-center">
+          <div className="text-2xl font-bold text-red-600">{unprocessed}</div>
+          <div className="text-xs text-red-600">未处理</div>
+        </div>
+      )}
     </div>
   );
 };
@@ -182,6 +191,16 @@ export const SyncLogModal = ({ isOpen, onClose, account }) => {
           </div>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 p-1"><X className="w-5 h-5" /></button>
         </div>
+        
+        {account.status === 'failed' && account.error_message && (
+          <div className="p-4 bg-red-50 border-b border-red-100 flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
+            <div>
+              <h4 className="text-sm font-medium text-red-800">同步失败</h4>
+              <p className="text-sm text-red-600 mt-1">{account.error_message}</p>
+            </div>
+          </div>
+        )}
         
         <div className="p-4 border-b">
           <h4 className="text-sm font-medium text-gray-700 mb-3">统计摘要</h4>
