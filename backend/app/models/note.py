@@ -27,7 +27,8 @@ class Note(db.Model):
     )
     
     note_id = db.Column(db.String(64), primary_key=True)
-    user_id = db.Column(db.String(64), db.ForeignKey('accounts.user_id'), index=True)
+    # 外键设置 ondelete='CASCADE'：删除博主时自动级联删除关联笔记
+    user_id = db.Column(db.String(64), db.ForeignKey('accounts.user_id', ondelete='CASCADE'), index=True)
     
     # 基本信息
     nickname = db.Column(db.String(128))

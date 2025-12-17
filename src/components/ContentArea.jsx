@@ -311,14 +311,29 @@ export const ContentArea = ({
       alert('请先选择要删除的账号');
       return;
     }
-    if (!confirm(`确定要删除选中的 ${selectedIds.size} 个账号吗？`)) return;
+    if (!confirm(`确定要删除选中的 ${selectedIds.size} 个账号吗？\n\n⚠️ 此操作将同时删除这些博主的所有笔记数据，不可恢复！`)) return;
     
     try {
-      await accountApi.batchDelete(Array.from(selectedIds));
+      const result = await accountApi.batchDelete(Array.from(selectedIds));
       setSelectedIds(new Set());
       fetchAccounts();
+      // 显示删除结果
+      const msg = `成功删除 ${result?.deleted || selectedIds.size} 个账号`;
+      if (result?.deleted_notes > 0) {
+        console.log(`✅ ${msg}，移除 ${result.deleted_notes} 条关联笔记`);
+      }
     } catch (err) {
-      setError('删除失败');
+      console.error('删除失败:', err);
+      // 显示详细错误信息
+      const errorMsg = err.message || '删除失败';
+      if (err.errorCode === 'ACCOUNTS_SYNCING') {
+        setError('删除失败：部分账号正在同步中，请先停止同步');
+      } else if (err.errorCode === 'ACCOUNTS_NOT_FOUND') {
+        setError('删除失败：未找到要删除的账号');
+        fetchAccounts(); // 刷新列表
+      } else {
+        setError(`删除失败：${errorMsg}`);
+      }
     }
   }, [selectedIds, fetchAccounts, setError]);
 

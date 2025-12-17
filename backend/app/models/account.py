@@ -58,8 +58,8 @@ class Account(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
-    # 关联笔记
-    notes = db.relationship('Note', backref='account', lazy='dynamic')
+    # 关联笔记（设置级联删除：删除账号时自动删除关联笔记）
+    notes = db.relationship('Note', backref='account', lazy='dynamic', cascade='all, delete-orphan', passive_deletes=True)
     
     def to_dict(self, include_full_logs=False):
         """转换为字典

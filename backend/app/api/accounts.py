@@ -132,31 +132,53 @@ def get_account(account_id):
 
 @accounts_bp.route('/accounts/<int:account_id>', methods=['DELETE'])
 def delete_account(account_id):
-    """删除单个账号"""
+    """删除单个账号（包括关联的笔记）"""
+    from ..models import Note
+    
     account = Account.query.get(account_id)
     if not account:
         return ApiResponse.not_found('账号不存在')
     
+    # 检查是否正在同步
+    if account.status in ['processing', 'pending']:
+        return ApiResponse.error(
+            f'账号 {account.name or account.user_id} 正在同步中，请先停止同步后再删除',
+            409,
+            'ACCOUNT_SYNCING'
+        )
+    
     try:
         user_id = account.user_id
+        account_name = account.name or user_id
+        
+        # 先删除关联的笔记（确保外键约束不会阻止删除）
+        note_count = Note.query.filter_by(user_id=user_id).delete(synchronize_session=False)
+        
+        # 再删除账号
         db.session.delete(account)
         db.session.commit()
-        logger.info(f"删除账号: {user_id}")
-        return success_response(message='删除成功')
+        
+        logger.info(f"删除账号: {account_name} (user_id={user_id})，关联笔记: {note_count} 条")
+        return success_response(
+            data={'deleted_notes': note_count},
+            message=f'删除成功，已移除 {note_count} 条关联笔记'
+        )
     except Exception as e:
         db.session.rollback()
-        logger.error(f"删除账号失败: {e}")
-        return ApiResponse.server_error('删除失败')
+        logger.error(f"删除账号失败 (id={account_id}): {e}")
+        return ApiResponse.server_error(f'删除失败: {str(e)}')
 
 
 @accounts_bp.route('/accounts/batch-delete', methods=['POST'])
 def batch_delete_accounts():
     """
-    批量删除账号
+    批量删除账号（包括关联的笔记）
     
     Request Body:
         - ids: 账号ID数组 (最多100个)
     """
+    from ..models import Note
+    
     data = request.json or {}
     
     # 验证 ID 列表
@@ -169,17 +191,43 @@ def batch_delete_accounts():
         return ApiResponse.validation_error(error_msg)
     
     try:
+        # 查询要删除的账号
+        accounts = Account.query.filter(Account.id.in_(ids)).all()
+        
+        if not accounts:
+            return ApiResponse.error('未找到要删除的账号', 404, 'ACCOUNTS_NOT_FOUND')
+        
+        # 检查是否有正在同步的账号
+        syncing_accounts = [acc for acc in accounts if acc.status in ['processing', 'pending']]
+        if syncing_accounts:
+            syncing_names = ', '.join([acc.name or acc.user_id for acc in syncing_accounts[:3]])
+            if len(syncing_accounts) > 3:
+                syncing_names += f' 等 {len(syncing_accounts)} 个账号'
+            return ApiResponse.error(
+                f'以下账号正在同步中，请先停止同步后再删除：{syncing_names}',
+                409,
+                'ACCOUNTS_SYNCING'
+            )
+        
+        # 获取所有要删除账号的 user_ids
+        user_ids = [acc.user_id for acc in accounts]
+        
+        # 先删除关联的笔记
+        note_count = Note.query.filter(Note.user_id.in_(user_ids)).delete(synchronize_session=False)
+        
+        # 再删除账号
         deleted_count = Account.query.filter(Account.id.in_(ids)).delete(synchronize_session=False)
         db.session.commit()
-        logger.info(f"批量删除账号: {deleted_count} 个")
+        
+        logger.info(f"批量删除账号: {deleted_count} 个，关联笔记: {note_count} 条")
         return success_response(
-            data={'deleted': deleted_count},
-            message=f'成功删除 {deleted_count} 个账号'
+            data={'deleted': deleted_count, 'deleted_notes': note_count},
+            message=f'成功删除 {deleted_count} 个账号，移除 {note_count} 条关联笔记'
         )
     except Exception as e:
         db.session.rollback()
         logger.error(f"批量删除失败: {e}")
-        return ApiResponse.server_error('批量删除失败')
+        return ApiResponse.server_error(f'批量删除失败: {str(e)}')
 
 
 @accounts_bp.route('/accounts/<int:account_id>/sync', methods=['POST'])
