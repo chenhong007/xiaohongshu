@@ -100,7 +100,11 @@ class CookieService:
             (is_valid, user_info_dict or None)
         """
         from Spider_XHS.apis.xhs_pc_apis import XHS_Apis
-        xhs_apis = XHS_Apis()
+        from .sync.rate_limiter import create_rate_limited_xhs_apis
+        
+        # 使用带限流的 API 包装类
+        raw_xhs_apis = XHS_Apis()
+        xhs_apis = create_rate_limited_xhs_apis(raw_xhs_apis)
         
         # 获取解密后的 Cookie
         cookie_str = cookie.get_cookie_str()

@@ -47,6 +47,12 @@ from .sync.retry_handler import ApiRetryHandler, ErrorType
 from .sync.auth_handler import AuthErrorHandler, TokenRetryHelper
 from .sync.progress_tracker import ProgressTracker, NoteProcessingHelper
 from .sync.health_tracker import AccountHealthTracker, HealthStatus, mark_account_healthy
+from .sync.rate_limiter import (
+    RateLimitedXHSApis,
+    get_api_rate_limiter,
+    reset_api_rate_limiter,
+    create_rate_limited_xhs_apis,
+)
 
 # Spider_XHS imports
 try:
@@ -653,8 +659,11 @@ class SyncService:
             return
         
         try:
-            xhs_apis = XHS_Apis()
+            # 使用带限流的 API 包装类，实现全局请求速率控制
+            raw_xhs_apis = XHS_Apis()
+            xhs_apis = create_rate_limited_xhs_apis(raw_xhs_apis)
             data_spider = Data_Spider()
+            logger.info(f"[Sync] 已初始化全局 API 限流器: {xhs_apis.get_rate_limiter_stats()}")
         except Exception as e:
             error_msg = f"Failed to initialize API: {e}"
             logger.error(f"Failed to initialize XHS APIs: {e}")
@@ -786,37 +795,22 @@ class SyncService:
                     db.session.commit()
                     continue
 
-                # Update user info
+                # Update user info（通过 token_manager 的缓存机制，避免重复调用 API）
                 try:
-                    success_info, msg_info, user_info_res = xhs_apis.get_user_info(account.user_id, cookie_str)
+                    user_info = token_mgr.get_user_info(account.user_id)
                     
-                    # Check for auth error
-                    if not success_info:
-                        is_auth, auth_error_msg = AuthErrorHandler.handle_account_auth_error(
-                            account=account,
-                            msg=msg_info,
-                            stop_callback=SyncService.stop_sync,
-                            mark_failed_callback=SyncService._mark_accounts_failed,
-                            remaining_account_ids=remaining_ids
-                        )
-                        if is_auth:
-                            break
-                    
-                    if success_info and user_info_res and user_info_res.get('data'):
-                        user_data = user_info_res['data']
-                        account.name = user_data.get('basic_info', {}).get('nickname') or account.name
-                        account.avatar = user_data.get('basic_info', {}).get('images') or account.avatar
-                        account.desc = user_data.get('basic_info', {}).get('desc') or account.desc
-                        
-                        for interaction in user_data.get('interactions', []):
-                            if interaction.get('type') == 'fans':
-                                account.fans = interaction.get('count')
-                            elif interaction.get('type') == 'follows':
-                                account.follows = interaction.get('count')
-                            elif interaction.get('type') == 'interaction':
-                                account.interaction = interaction.get('count')
+                    if user_info:
+                        # 使用缓存的用户信息更新账号
+                        account.name = user_info.nickname or account.name
+                        account.avatar = user_info.avatar or account.avatar
+                        account.desc = user_info.desc or account.desc
+                        account.fans = user_info.fans if user_info.fans is not None else account.fans
+                        account.follows = user_info.follows if user_info.follows is not None else account.follows
+                        account.interaction = user_info.interaction if user_info.interaction is not None else account.interaction
                         
                         db.session.commit()
+                    else:
+                        logger.warning(f"Failed to get user info for {account.user_id}")
                 except Exception as e:
                     logger.warning(f"Failed to update user info for {account.user_id}: {e}")
                 

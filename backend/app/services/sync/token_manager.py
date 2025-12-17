@@ -9,7 +9,7 @@ XsecTokenManager - 小红书 xsec_token 统一管理
 """
 import time
 import threading
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 from dataclasses import dataclass
 
 from ...utils.logger import get_logger
@@ -23,6 +23,20 @@ class TokenInfo:
     token: str
     fetch_time: float  # Unix timestamp
     use_count: int = 0  # 使用次数，用于判断是否需要预防性刷新
+
+
+@dataclass
+class UserInfoCache:
+    """用户信息缓存，避免重复调用 get_user_info API"""
+    user_id: str
+    nickname: Optional[str] = None
+    avatar: Optional[str] = None
+    desc: Optional[str] = None
+    fans: Optional[int] = None
+    follows: Optional[int] = None
+    interaction: Optional[int] = None
+    fetch_time: float = 0.0  # Unix timestamp
+    raw_data: Optional[Dict] = None  # 原始返回数据，供其他用途使用
 
 
 class XsecTokenManager:
@@ -55,6 +69,9 @@ class XsecTokenManager:
     USER_URL_TEMPLATE = "https://www.xiaohongshu.com/user/profile/{user_id}"
     NOTE_URL_TEMPLATE = "https://www.xiaohongshu.com/explore/{note_id}"
     
+    # 用户信息缓存过期时间（秒）- 同步期间通常不需要刷新
+    USER_INFO_EXPIRE_SECONDS = 3600  # 1 小时
+    
     def __init__(self, xhs_apis, cookie_str: str):
         """初始化 Token 管理器
         
@@ -65,6 +82,7 @@ class XsecTokenManager:
         self._xhs_apis = xhs_apis
         self._cookie_str = cookie_str
         self._token_cache: Dict[str, TokenInfo] = {}  # user_id -> TokenInfo
+        self._user_info_cache: Dict[str, UserInfoCache] = {}  # user_id -> UserInfoCache
         self._lock = threading.Lock()
     
     def get_user_token(self, user_id: str, force_refresh: bool = False) -> str:
@@ -109,9 +127,8 @@ class XsecTokenManager:
     def refresh_user_token(self, user_id: str) -> str:
         """强制刷新用户的 xsec_token
         
-        获取策略（按优先级）：
-        1. 从主页推荐（homefeed）获取通用 xsec_token
-        2. 通过搜索用户昵称获取特定用户的 xsec_token
+        从主页推荐（homefeed）获取通用 xsec_token，这个 token 可以用于访问用户笔记列表。
+        笔记详情的 xsec_token 应从用户笔记列表接口 /api/sns/web/v1/user_posted 返回的数据中获取。
         
         Args:
             user_id: 用户 ID
@@ -122,8 +139,8 @@ class XsecTokenManager:
         if not user_id or not self._xhs_apis:
             return ''
         
-        # 策略1: 从主页推荐获取通用 xsec_token
-        # 主页推荐返回的笔记中包含 xsec_token，这个 token 通常可以用于访问其他用户的笔记
+        # 从主页推荐获取通用 xsec_token
+        # 主页推荐返回的笔记中包含 xsec_token，这个 token 可以用于访问用户笔记列表
         token = self._get_token_from_homefeed()
         if token:
             with self._lock:
@@ -135,19 +152,7 @@ class XsecTokenManager:
             logger.debug(f"Fetched xsec_token for user {user_id} via homefeed")
             return token
         
-        # 策略2: 通过搜索用户昵称获取 xsec_token（备选方案）
-        token = self._get_token_from_user_search(user_id)
-        if token:
-            with self._lock:
-                self._token_cache[user_id] = TokenInfo(
-                    token=token,
-                    fetch_time=time.time(),
-                    use_count=0
-                )
-            logger.debug(f"Fetched xsec_token for user {user_id} via search")
-            return token
-        
-        logger.warning(f"Failed to fetch xsec_token for user {user_id} via all methods")
+        logger.warning(f"Failed to fetch xsec_token for user {user_id} from homefeed")
         return ''
     
     def _get_token_from_homefeed(self) -> str:
@@ -228,65 +233,6 @@ class XsecTokenManager:
         
         return ''
     
-    def _get_token_from_user_search(self, user_id: str) -> str:
-        """通过搜索用户昵称获取 xsec_token（备选方案）
-        
-        Args:
-            user_id: 用户 ID
-            
-        Returns:
-            xsec_token 字符串，获取失败返回空字符串
-        """
-        try:
-            # 获取用户信息以获取昵称
-            success_info, msg_info, user_info = self._xhs_apis.get_user_info(
-                user_id, self._cookie_str
-            )
-            
-            if not success_info or not user_info:
-                logger.debug(f"Failed to get user info for {user_id}: {msg_info}")
-                return ''
-            
-            # 提取昵称
-            basic_info = user_info.get('data', {}).get('basic_info', {})
-            if not basic_info:
-                basic_info = user_info.get('basic_info', {})
-            nickname = basic_info.get('nickname') or user_info.get('nickname', '')
-            
-            if not nickname:
-                logger.debug(f"No nickname found for user {user_id}")
-                return ''
-            
-            # 通过搜索昵称获取 xsec_token
-            success_search, msg_search, search_res = self._xhs_apis.search_user(
-                nickname, self._cookie_str, page=1
-            )
-            
-            if not success_search or not search_res:
-                logger.debug(f"Failed to search user '{nickname}': {msg_search}")
-                return ''
-            
-            # 在搜索结果中找到目标用户
-            users = search_res.get('data', {}).get('users', [])
-            for user in users:
-                found_user_id = (
-                    user.get('user_id') or 
-                    user.get('id') or 
-                    user.get('userid') or 
-                    user.get('userId')
-                )
-                if found_user_id == user_id:
-                    xsec_token = user.get('xsec_token', '')
-                    if xsec_token:
-                        return xsec_token
-            
-            logger.debug(f"User {user_id} not found in search results")
-            
-        except Exception as e:
-            logger.debug(f"Exception searching user {user_id}: {e}")
-        
-        return ''
-    
     def _refresh_token_async(self, user_id: str) -> None:
         """异步刷新 token（用于预防性刷新）"""
         try:
@@ -353,6 +299,174 @@ class XsecTokenManager:
         """清空所有 token 缓存"""
         with self._lock:
             self._token_cache.clear()
+            self._user_info_cache.clear()
+    
+    # ==================== 用户信息缓存方法 ====================
+    
+    def get_user_info(self, user_id: str, force_refresh: bool = False) -> Optional[UserInfoCache]:
+        """获取用户信息（带缓存）
+        
+        首次调用会请求 API 并缓存结果，后续调用直接返回缓存。
+        这避免了在同步过程中重复调用 get_user_info API。
+        
+        Args:
+            user_id: 用户 ID
+            force_refresh: 是否强制刷新（忽略缓存）
+            
+        Returns:
+            UserInfoCache 对象，获取失败返回 None
+        """
+        if not user_id:
+            return None
+        
+        # 检查缓存
+        if not force_refresh:
+            with self._lock:
+                cached = self._user_info_cache.get(user_id)
+                if cached and self._is_user_info_valid(cached):
+                    logger.debug(f"Using cached user info for {user_id}")
+                    return cached
+        
+        # 缓存未命中或已过期，获取新数据
+        return self._fetch_and_cache_user_info(user_id)
+    
+    def _is_user_info_valid(self, info: UserInfoCache) -> bool:
+        """检查用户信息缓存是否有效"""
+        if not info or not info.user_id:
+            return False
+        elapsed = time.time() - info.fetch_time
+        return elapsed < self.USER_INFO_EXPIRE_SECONDS
+    
+    def _fetch_and_cache_user_info(self, user_id: str) -> Optional[UserInfoCache]:
+        """从 API 获取用户信息并缓存
+        
+        Args:
+            user_id: 用户 ID
+            
+        Returns:
+            UserInfoCache 对象，获取失败返回 None
+        """
+        if not self._xhs_apis:
+            return None
+        
+        try:
+            success, msg, res = self._xhs_apis.get_user_info(user_id, self._cookie_str)
+            
+            if not success or not res:
+                logger.warning(f"Failed to get user info for {user_id}: {msg}")
+                return None
+            
+            user_data = res.get('data', {})
+            if not user_data:
+                return None
+            
+            # 解析用户信息
+            basic_info = user_data.get('basic_info', {})
+            
+            # 解析互动数据
+            fans = follows = interaction = None
+            for item in user_data.get('interactions', []):
+                item_type = item.get('type')
+                if item_type == 'fans':
+                    fans = item.get('count')
+                elif item_type == 'follows':
+                    follows = item.get('count')
+                elif item_type == 'interaction':
+                    interaction = item.get('count')
+            
+            # 创建缓存对象
+            user_info = UserInfoCache(
+                user_id=user_id,
+                nickname=basic_info.get('nickname'),
+                avatar=basic_info.get('images'),
+                desc=basic_info.get('desc'),
+                fans=fans,
+                follows=follows,
+                interaction=interaction,
+                fetch_time=time.time(),
+                raw_data=user_data
+            )
+            
+            # 存入缓存
+            with self._lock:
+                self._user_info_cache[user_id] = user_info
+            
+            logger.debug(f"Fetched and cached user info for {user_id}")
+            return user_info
+            
+        except Exception as e:
+            logger.warning(f"Exception getting user info for {user_id}: {e}")
+            return None
+    
+    def set_user_info(self, user_id: str, user_data: Dict[str, Any]) -> None:
+        """手动设置用户信息缓存（用于外部已获取的数据）
+        
+        当外部代码已经调用了 get_user_info API，可以用此方法将结果存入缓存，
+        避免后续重复请求。
+        
+        Args:
+            user_id: 用户 ID
+            user_data: API 返回的 data 字段
+        """
+        if not user_id or not user_data:
+            return
+        
+        basic_info = user_data.get('basic_info', {})
+        
+        # 解析互动数据
+        fans = follows = interaction = None
+        for item in user_data.get('interactions', []):
+            item_type = item.get('type')
+            if item_type == 'fans':
+                fans = item.get('count')
+            elif item_type == 'follows':
+                follows = item.get('count')
+            elif item_type == 'interaction':
+                interaction = item.get('count')
+        
+        user_info = UserInfoCache(
+            user_id=user_id,
+            nickname=basic_info.get('nickname'),
+            avatar=basic_info.get('images'),
+            desc=basic_info.get('desc'),
+            fans=fans,
+            follows=follows,
+            interaction=interaction,
+            fetch_time=time.time(),
+            raw_data=user_data
+        )
+        
+        with self._lock:
+            self._user_info_cache[user_id] = user_info
+        
+        logger.debug(f"Manually cached user info for {user_id}")
+    
+    def get_cached_user_info(self, user_id: str) -> Optional[UserInfoCache]:
+        """获取缓存的用户信息（不触发 API 请求）
+        
+        Args:
+            user_id: 用户 ID
+            
+        Returns:
+            缓存的 UserInfoCache，不存在或已过期返回 None
+        """
+        with self._lock:
+            cached = self._user_info_cache.get(user_id)
+            if cached and self._is_user_info_valid(cached):
+                return cached
+        return None
+    
+    def invalidate_user_info(self, user_id: str) -> None:
+        """使指定用户的信息缓存失效
+        
+        Args:
+            user_id: 用户 ID
+        """
+        with self._lock:
+            if user_id in self._user_info_cache:
+                del self._user_info_cache[user_id]
+    
+    # ==================== URL 构建方法 ====================
     
     def build_user_url(self, user_id: str, token: Optional[str] = None) -> str:
         """构建用户主页 URL
@@ -530,14 +644,21 @@ class XsecTokenManager:
             统计信息字典
         """
         with self._lock:
-            valid_count = sum(
+            valid_token_count = sum(
                 1 for info in self._token_cache.values() 
                 if self._is_token_valid(info)
             )
+            valid_user_info_count = sum(
+                1 for info in self._user_info_cache.values()
+                if self._is_user_info_valid(info)
+            )
             return {
-                'total_cached': len(self._token_cache),
-                'valid_tokens': valid_count,
-                'expired_tokens': len(self._token_cache) - valid_count,
+                'total_cached_tokens': len(self._token_cache),
+                'valid_tokens': valid_token_count,
+                'expired_tokens': len(self._token_cache) - valid_token_count,
+                'total_cached_user_info': len(self._user_info_cache),
+                'valid_user_info': valid_user_info_count,
+                'expired_user_info': len(self._user_info_cache) - valid_user_info_count,
             }
 
 

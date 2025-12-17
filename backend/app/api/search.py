@@ -32,7 +32,11 @@ def search_users():
     
     try:
         from Spider_XHS.apis.xhs_pc_apis import XHS_Apis
-        xhs_apis = XHS_Apis()
+        from ..services.sync.rate_limiter import create_rate_limited_xhs_apis
+        
+        # 使用带限流的 API 包装类
+        raw_xhs_apis = XHS_Apis()
+        xhs_apis = create_rate_limited_xhs_apis(raw_xhs_apis)
         success, msg, res = xhs_apis.search_user(keyword, cookie_str, page=1)
         
         if not success:
@@ -117,7 +121,11 @@ def search_notes():
     
     try:
         from Spider_XHS.apis.xhs_pc_apis import XHS_Apis
-        xhs_apis = XHS_Apis()
+        from ..services.sync.rate_limiter import create_rate_limited_xhs_apis
+        
+        # 使用带限流的 API 包装类
+        raw_xhs_apis = XHS_Apis()
+        xhs_apis = create_rate_limited_xhs_apis(raw_xhs_apis)
         success, msg, res = xhs_apis.search_note(keyword, cookie_str, page=page, 
                                                   sort_type_choice=sort, note_type=note_type)
         

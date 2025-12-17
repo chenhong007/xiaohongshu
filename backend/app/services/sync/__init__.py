@@ -15,6 +15,7 @@ This package contains refactored sync service components:
 - retry_handler: Unified API retry and error handling
 - auth_handler: Centralized authentication error handling
 - progress_tracker: Progress tracking and heartbeat management
+- rate_limiter: Global API rate limiting with token bucket algorithm
 """
 from .delay_manager import AdaptiveDelayManager, get_adaptive_delay_manager
 from .session_pool import RequestSessionPool, get_request_session_pool
@@ -29,6 +30,14 @@ from .note_fetcher import NoteFetcher, BatchNoteFetcher, FetchResult
 from .retry_handler import ApiRetryHandler, ErrorType, RetryResult, get_api_retry_handler
 from .auth_handler import AuthErrorHandler, TokenRetryHelper
 from .progress_tracker import ProgressTracker, NoteProcessingHelper
+from .rate_limiter import (
+    TokenBucketRateLimiter,
+    RateLimitedXHSApis,
+    RateLimiterConfig,
+    get_api_rate_limiter,
+    reset_api_rate_limiter,
+    create_rate_limited_xhs_apis,
+)
 
 __all__ = [
     'AdaptiveDelayManager',
@@ -58,4 +67,10 @@ __all__ = [
     'TokenRetryHelper',
     'ProgressTracker',
     'NoteProcessingHelper',
+    'TokenBucketRateLimiter',
+    'RateLimitedXHSApis',
+    'RateLimiterConfig',
+    'get_api_rate_limiter',
+    'reset_api_rate_limiter',
+    'create_rate_limited_xhs_apis',
 ]

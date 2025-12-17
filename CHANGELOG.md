@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **全局 API 调用限流器**
+  - 新增 `rate_limiter.py` 模块，实现令牌桶算法的全局请求限流
+  - 新增 `TokenBucketRateLimiter` 类，提供平滑的请求速率控制
+  - 新增 `RateLimitedXHSApis` 包装类，透明代理原始 API 并自动限流
+  - 支持动态速率调整：检测到限流响应后自动降速，连续成功后逐步恢复
+  - 支持突发请求容忍（burst_size），避免过于严格的限制
+  - 支持限流惩罚机制，触发限流后进入惩罚期
+  - 提供 `get_api_rate_limiter()` 全局单例和统计信息查询
+  - 默认配置：每2秒1个请求，突发容量3个，限流后惩罚60秒
+
+### Changed
+- **xsec_token 获取逻辑优化**
+  - 移除冗余的「通过搜索用户昵称获取 xsec_token」备选方案
+  - 笔记详情的 xsec_token 统一从用户笔记列表接口 `/api/sns/web/v1/user_posted` 返回数据中获取
+  - 简化 `XsecTokenManager.refresh_user_token()` 方法，仅保留 homefeed 获取策略
+  
+- **API 调用架构优化**
+  - `sync_service.py` 改为使用 `RateLimitedXHSApis` 替代直接调用 `XHS_Apis`
+  - `cookie_service.py` 验证接口使用全局限流器
+  - `search.py` 搜索接口使用全局限流器
+  - 移除各模块分散的延迟管理逻辑，统一由限流器控制请求速率
+
 ## [1.3.0] - 2025-12-11
 
 ### Added
