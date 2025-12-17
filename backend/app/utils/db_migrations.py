@@ -65,3 +65,4 @@ def _add_account_health_status_fields():
     else:
         logger.debug("Account health status fields already exist, no migration needed")
 
+
