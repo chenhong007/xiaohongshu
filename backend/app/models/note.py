@@ -20,6 +20,10 @@ class Note(db.Model):
         db.Index('ix_notes_collected_count', 'collected_count'),
         db.Index('ix_notes_comment_count', 'comment_count'),
         db.Index('ix_notes_share_count', 'share_count'),
+        # 性能优化：添加 last_updated 索引用于时间范围回退查询
+        db.Index('ix_notes_last_updated', 'last_updated'),
+        # 复合索引：类型+时间（按类型筛选后排序）
+        db.Index('ix_notes_type_upload_time', 'type', 'upload_time'),
     )
     
     note_id = db.Column(db.String(64), primary_key=True)
@@ -72,8 +76,32 @@ class Note(db.Model):
                 return []
         return []
     
-    def to_dict(self):
-        """转换为字典"""
+    def to_dict(self, minimal: bool = False):
+        """转换为字典
+        
+        Args:
+            minimal: 如果为 True，只返回列表展示需要的核心字段（性能优化）
+        """
+        if minimal:
+            # 列表页只需要这些字段，避免传输大量数据
+            return {
+                'note_id': self.note_id,
+                'user_id': self.user_id,
+                'nickname': self.nickname,
+                'avatar': self.avatar,
+                'title': self.title,
+                'desc': self.desc[:200] if self.desc else None,  # 只返回前200字符
+                'type': self.type,
+                'liked_count': self.liked_count,
+                'collected_count': self.collected_count,
+                'comment_count': self.comment_count,
+                'share_count': self.share_count,
+                'upload_time': self.upload_time,
+                'cover_remote': self.cover_remote,
+                'cover_local': self.cover_local,
+            }
+        
+        # 完整字段（详情页或导出使用）
         return {
             'note_id': self.note_id,
             'user_id': self.user_id,

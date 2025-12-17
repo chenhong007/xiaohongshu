@@ -46,6 +46,7 @@ from .sync.note_fetcher import NoteFetcher, FetchResult
 from .sync.retry_handler import ApiRetryHandler, ErrorType
 from .sync.auth_handler import AuthErrorHandler, TokenRetryHelper
 from .sync.progress_tracker import ProgressTracker, NoteProcessingHelper
+from .sync.health_tracker import AccountHealthTracker, HealthStatus, mark_account_healthy
 
 # Spider_XHS imports
 try:
@@ -668,7 +669,7 @@ class SyncService:
                 logger.info("Sync stopped by user")
                 break
                 
-            # 为所有同步模式创建日志收集器，以便记录最近一次同步类型
+                # 为所有同步模式创建日志收集器，以便记录最近一次同步类型
             sync_log = SyncLogCollector(acc_id, sync_mode)
             sync_log_collectors[acc_id] = sync_log
             
@@ -680,6 +681,9 @@ class SyncService:
                 remaining_ids.discard(acc_id)
                 auth_error_msg = None
                 account_name = account.name or account.user_id
+                
+                # 创建账号健康状态追踪器
+                health_tracker = AccountHealthTracker(acc_id, account_name)
                 
                 sync_log_broadcaster.info(
                     f"Starting sync: {account_name}",
@@ -1011,7 +1015,8 @@ class SyncService:
                             cookie_str=cookie_str,
                             sync_log=sync_log,
                             on_auth_error=handle_auth_error_callback,
-                            on_rate_limit=handle_rate_limit_callback
+                            on_rate_limit=handle_rate_limit_callback,
+                            health_tracker=health_tracker
                         )
                         
                         fetch_result = note_fetcher.fetch_note_detail(
@@ -1116,6 +1121,9 @@ class SyncService:
                     account.loaded_msgs = total_all_notes  # 全部笔记数（包括排除的）
                     account.last_sync = datetime.utcnow()
                     account.sync_heartbeat = None
+                    
+                    # 同步完成，重置账号健康状态为正常
+                    health_tracker.set_healthy()
                     
                     # Post-sync validation for deep sync
                     if sync_mode == 'deep' and 'deep_validator' in locals():

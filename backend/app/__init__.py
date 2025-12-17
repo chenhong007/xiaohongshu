@@ -63,6 +63,8 @@ def create_app(config_class=None):
     # Perform startup tasks
     # Note: Use 'flask db upgrade' to create/update database tables
     with app.app_context():
+        # Run database migrations
+        _run_db_migrations(logger)
         _cleanup_stale_tasks(logger)
     
     # Register handlers and hooks
@@ -89,6 +91,15 @@ def _register_blueprints(app):
     app.register_blueprint(auth_bp, url_prefix='/api')
     app.register_blueprint(search_bp, url_prefix='/api')
     app.register_blueprint(sync_logs_bp, url_prefix='/api')
+
+
+def _run_db_migrations(logger):
+    """Run database migrations on startup."""
+    try:
+        from .utils.db_migrations import run_migrations
+        run_migrations()
+    except Exception as e:
+        logger.warning(f"Failed to run database migrations: {e}")
 
 
 def _cleanup_stale_tasks(logger):

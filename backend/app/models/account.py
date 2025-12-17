@@ -30,6 +30,17 @@ class Account(db.Model):
     error_message = db.Column(db.Text)  # 同步失败时的错误信息
     sync_heartbeat = db.Column(db.DateTime)  # 同步心跳时间，用于检测僵死任务
     
+    # 账号健康状态 - 用于前端显示账号同步问题
+    # healthy: 正常
+    # cookie_expired: Cookie 过期/失效
+    # rate_limited: 被限流
+    # token_invalid: xsec_token 无效
+    # risk_control: 风控限制
+    # unknown_error: 未知错误
+    health_status = db.Column(db.String(32), default='healthy')
+    health_message = db.Column(db.Text)  # 健康状态详细信息
+    health_updated_at = db.Column(db.DateTime)  # 健康状态更新时间
+    
     # 同步日志 (JSON格式，存储深度同步过程中的详细异常信息)
     # 结构: {
     #   "sync_mode": "deep",
@@ -95,6 +106,10 @@ class Account(db.Model):
             'sync_logs': sync_logs_data,
             'sync_heartbeat': self.sync_heartbeat.isoformat() + 'Z' if self.sync_heartbeat else None,
             'created_at': self.created_at.isoformat() + 'Z' if self.created_at else None,
+            # 健康状态信息
+            'health_status': self.health_status or 'healthy',
+            'health_message': self.health_message,
+            'health_updated_at': self.health_updated_at.isoformat() + 'Z' if self.health_updated_at else None,
         }
     
     def get_sync_logs_issues(self, page=1, page_size=50, issue_type=None):

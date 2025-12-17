@@ -1,6 +1,18 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Search, RefreshCw, ChevronDown, Coffee, Download as DownloadIcon, Play, Image, Video, ExternalLink, Trash2, X, Check, Calendar, Heart, Star, MessageCircle, RotateCcw, Share2, Copy, CheckCircle, Settings2, ChevronLeft, ChevronRight, Eye, EyeOff } from 'lucide-react';
 import { noteApi } from '../services';
+
+// ===== 性能优化：防抖 Hook =====
+const useDebounce = (value, delay = 300) => {
+  const [debouncedValue, setDebouncedValue] = useState(value);
+  
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedValue(value), delay);
+    return () => clearTimeout(timer);
+  }, [value, delay]);
+  
+  return debouncedValue;
+};
 
 // 图片预览组件 - 使用 state 跟踪有效的图片 URL，确保小图和悬浮大图使用相同的源
 // 修复问题：
@@ -206,23 +218,9 @@ export const DownloadPage = ({ accounts: cachedAccounts = [], accountsLoading = 
     setVisibleColumns(newState);
   };
 
-  // Auto-load notes on first mount
-  // - Load immediately if accounts are ready
-  // - Load after accountsLoading finishes (even if accounts is empty, notes can still load)
+  // 不再自动加载数据，等待用户选择筛选条件后点击查询按钮
   // - 使用 ref 防止 StrictMode 下的重复请求
   const fetchingRef = useRef(false);
-  
-  useEffect(() => {
-    if (!initialLoadRef.current && !accountsLoading && !fetchingRef.current) {
-      initialLoadRef.current = true;
-      fetchingRef.current = true;
-      setDataLoaded(true);
-      // 直接调用，不使用 requestAnimationFrame 避免延迟
-      fetchNotes().finally(() => {
-        fetchingRef.current = false;
-      });
-    }
-  }, [accountsLoading]);
 
   // 点击外部关闭博主下拉框
   useEffect(() => {
@@ -243,42 +241,54 @@ export const DownloadPage = ({ accounts: cachedAccounts = [], accountsLoading = 
            (acc.user_id || '').toLowerCase().includes(searchLower);
   });
 
-  // 获取笔记列表
+  // ===== 性能优化：使用 useMemo 缓存查询参数，避免不必要的重渲染 =====
+  const queryParams = useMemo(() => {
+    const params = {
+      page,
+      page_size: pageSize,
+      sort_by: sortBy,
+      sort_order: sortOrder,
+      note_type: noteType,
+    };
+    
+    // 时间范围处理
+    if (timeRange === 'custom') {
+      if (customStartDate) params.start_date = customStartDate;
+      if (customEndDate) params.end_date = customEndDate;
+    } else if (timeRange !== 'all') {
+      params.time_range = timeRange;
+    }
+    
+    if (selectedUserIds.length > 0) {
+      params.user_ids = selectedUserIds.join(',');
+    }
+    
+    if (keyword.trim()) {
+      params.keyword = keyword.trim();
+      params.match_mode = matchMode;
+    }
+    
+    // 数值过滤参数（最小值）
+    if (likedCountMin !== '') params.liked_count_min = parseInt(likedCountMin);
+    if (collectedCountMin !== '') params.collected_count_min = parseInt(collectedCountMin);
+    if (commentCountMin !== '') params.comment_count_min = parseInt(commentCountMin);
+    if (shareCountMin !== '') params.share_count_min = parseInt(shareCountMin);
+    
+    return params;
+  }, [page, pageSize, sortBy, sortOrder, selectedUserIds, timeRange, customStartDate, customEndDate, keyword, matchMode, noteType, likedCountMin, collectedCountMin, commentCountMin, shareCountMin]);
+
+  // 获取笔记列表 - 优化：减少依赖项，使用 ref 缓存最新参数
+  const queryParamsRef = useRef(queryParams);
+  queryParamsRef.current = queryParams;
+  
   const fetchNotes = useCallback(async () => {
+    // 防止重复请求
+    if (fetchingRef.current) return;
+    fetchingRef.current = true;
+    
     setLoading(true);
     try {
-      const params = {
-        page,
-        page_size: pageSize,
-        sort_by: sortBy,
-        sort_order: sortOrder,
-        note_type: noteType,
-      };
-      
-      // 时间范围处理
-      if (timeRange === 'custom') {
-        if (customStartDate) params.start_date = customStartDate;
-        if (customEndDate) params.end_date = customEndDate;
-      } else if (timeRange !== 'all') {
-        params.time_range = timeRange;
-      }
-      
-      if (selectedUserIds.length > 0) {
-        params.user_ids = selectedUserIds.join(',');
-      }
-      
-      if (keyword.trim()) {
-        params.keyword = keyword.trim();
-        params.match_mode = matchMode;
-      }
-      
-      // 数值过滤参数（最小值）
-      if (likedCountMin !== '') params.liked_count_min = parseInt(likedCountMin);
-      if (collectedCountMin !== '') params.collected_count_min = parseInt(collectedCountMin);
-      if (commentCountMin !== '') params.comment_count_min = parseInt(commentCountMin);
-      if (shareCountMin !== '') params.share_count_min = parseInt(shareCountMin);
-      
-      const result = await noteApi.getAll(params);
+      const result = await noteApi.getAll(queryParamsRef.current);
       
       // api.js 已经自动解包了 data 字段，所以 result 直接是 { items, total, ... }
       if (result && result.items !== undefined) {
@@ -290,20 +300,19 @@ export const DownloadPage = ({ accounts: cachedAccounts = [], accountsLoading = 
       console.error('Failed to fetch notes:', err);
     } finally {
       setLoading(false);
+      fetchingRef.current = false;
     }
-  }, [page, pageSize, sortBy, sortOrder, selectedUserIds, timeRange, customStartDate, customEndDate, keyword, matchMode, noteType, likedCountMin, collectedCountMin, commentCountMin, shareCountMin]);
+  }, []); // 无依赖项，使用 ref 获取最新参数
 
-  // 页码、排序变化时自动加载（仅在已加载过数据的情况下）
-  // 使用防抖避免快速切换页码时的重复请求
+  // ===== 性能优化：页码、排序变化时自动加载，使用防抖避免快速操作 =====
+  const debouncedPage = useDebounce(page, 100);
+  
   useEffect(() => {
-    if (dataLoaded && !fetchingRef.current) {
-      fetchingRef.current = true;
-      fetchNotes().finally(() => {
-        fetchingRef.current = false;
-      });
+    if (dataLoaded) {
+      fetchNotes();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, sortBy, sortOrder]);
+  }, [debouncedPage, sortBy, sortOrder]);
 
   // 刷新数据 - 重置到第一页
   const handleRefresh = () => {
@@ -837,18 +846,21 @@ export const DownloadPage = ({ accounts: cachedAccounts = [], accountsLoading = 
                   <td colSpan={1 + Object.values(visibleColumns).filter(Boolean).length} className="p-0">
                     <div className="flex flex-col items-center justify-center text-gray-400 py-16">
                       <Coffee className="w-12 h-12 mb-4 text-gray-300" />
-                      <p>
-                        {loading ? '加载中...' : 
-                          dataLoaded ? '暂无数据，请先同步博主笔记' : 
-                          '请设置筛选条件后点击"刷新数据"按钮加载数据'}
-                      </p>
-                      {!dataLoaded && !loading && (
-                        <button 
-                          onClick={handleRefresh}
-                          className="mt-4 px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600 text-sm flex items-center gap-1"
-                        >
-                          <RefreshCw className="w-4 h-4" /> 刷新数据
-                        </button>
+                      {loading ? (
+                        <p>加载中...</p>
+                      ) : dataLoaded ? (
+                        <p>暂无数据，请先同步博主笔记</p>
+                      ) : (
+                        <>
+                          <p className="text-lg font-medium text-gray-500 mb-2">请选择筛选条件后查询</p>
+                          <p className="text-sm text-gray-400 mb-4">选择博主、时间范围或输入关键词，然后点击查询按钮</p>
+                          <button 
+                            onClick={handleRefresh}
+                            className="px-5 py-2 bg-red-500 text-white rounded-md hover:bg-red-600 text-sm flex items-center gap-1.5 shadow-sm transition-all hover:shadow"
+                          >
+                            <Search className="w-4 h-4" /> 查询笔记
+                          </button>
+                        </>
                       )}
                     </div>
                   </td>

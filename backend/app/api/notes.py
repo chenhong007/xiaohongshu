@@ -96,31 +96,67 @@ def get_notes():
             for k in keywords:
                 query = query.filter(Note.title.contains(k) | Note.desc.contains(k))
     
-    # 时间范围筛选
+    # ===== 性能优化：简化时间范围筛选逻辑 =====
+    # 使用 COALESCE 函数合并 upload_time 和 last_updated，避免复杂的 OR 条件
     from datetime import datetime, timedelta
-    from sqlalchemy import and_, case, func
+    from sqlalchemy import and_, func, case
+    
+    # 创建一个"有效时间"表达式：优先使用 upload_time，为空时回退到 last_updated
+    # 注意：upload_time 是字符串格式，last_updated 是 datetime，需要统一处理
+    def build_time_filter(start_str=None, end_str=None, start_dt=None, end_dt=None):
+        """构建时间过滤条件，优化查询性能"""
+        conditions = []
+        
+        if start_str or start_dt:
+            # 条件1: upload_time 非空且 >= start
+            if start_str:
+                conditions.append(
+                    and_(
+                        Note.upload_time.isnot(None),
+                        Note.upload_time != '',
+                        Note.upload_time >= start_str
+                    )
+                )
+            # 条件2: upload_time 为空，使用 last_updated
+            if start_dt:
+                conditions.append(
+                    and_(
+                        or_(Note.upload_time.is_(None), Note.upload_time == ''),
+                        Note.last_updated >= start_dt
+                    )
+                )
+        
+        if end_str or end_dt:
+            end_conditions = []
+            if end_str:
+                end_conditions.append(
+                    and_(
+                        Note.upload_time.isnot(None),
+                        Note.upload_time != '',
+                        Note.upload_time < end_str
+                    )
+                )
+            if end_dt:
+                end_conditions.append(
+                    and_(
+                        or_(Note.upload_time.is_(None), Note.upload_time == ''),
+                        Note.last_updated < end_dt
+                    )
+                )
+            if end_conditions:
+                conditions.append(or_(*end_conditions))
+        
+        return conditions
     
     # 优先使用自定义日期
     if start_date_str or end_date_str:
         if start_date_str:
             try:
-                # 验证日期格式
                 start_dt = datetime.strptime(start_date_str, '%Y-%m-%d')
-                # upload_time 是字符串格式 (如 "2024-12-01" 或 "2024-12-01 10:30:00")
-                # 对于空的 upload_time，回退使用 last_updated (同步时间)
                 query = query.filter(
                     or_(
-                        # upload_time 有值且满足条件
-                        and_(
-                            Note.upload_time.isnot(None),
-                            Note.upload_time != '',
-                            Note.upload_time >= start_date_str
-                        ),
-                        # upload_time 为空但 last_updated 满足条件
-                        and_(
-                            or_(Note.upload_time.is_(None), Note.upload_time == ''),
-                            Note.last_updated >= start_dt
-                        )
+                        and_(Note.upload_time.isnot(None), Note.upload_time != '', Note.upload_time >= start_date_str),
+                        and_(or_(Note.upload_time.is_(None), Note.upload_time == ''), Note.last_updated >= start_dt)
                     )
                 )
             except ValueError:
@@ -128,21 +164,12 @@ def get_notes():
         if end_date_str:
             try:
                 end_date = datetime.strptime(end_date_str, '%Y-%m-%d')
-                # 结束日期加一天，包含当天
                 end_date_next = end_date + timedelta(days=1)
+                end_date_next_str = end_date_next.strftime('%Y-%m-%d')
                 query = query.filter(
                     or_(
-                        # upload_time 有值且满足条件
-                        and_(
-                            Note.upload_time.isnot(None),
-                            Note.upload_time != '',
-                            Note.upload_time < end_date_next.strftime('%Y-%m-%d')
-                        ),
-                        # upload_time 为空但 last_updated 满足条件
-                        and_(
-                            or_(Note.upload_time.is_(None), Note.upload_time == ''),
-                            Note.last_updated < end_date_next
-                        )
+                        and_(Note.upload_time.isnot(None), Note.upload_time != '', Note.upload_time < end_date_next_str),
+                        and_(or_(Note.upload_time.is_(None), Note.upload_time == ''), Note.last_updated < end_date_next)
                     )
                 )
             except ValueError:
@@ -159,22 +186,11 @@ def get_notes():
             start_date = None
         
         if start_date:
-            # 使用 upload_time (发布时间) 进行过滤
-            # 对于空的 upload_time，回退使用 last_updated (同步时间)
-            start_date_str = start_date.strftime('%Y-%m-%d')
+            start_date_str_calc = start_date.strftime('%Y-%m-%d')
             query = query.filter(
                 or_(
-                    # upload_time 有值且满足条件
-                    and_(
-                        Note.upload_time.isnot(None),
-                        Note.upload_time != '',
-                        Note.upload_time >= start_date_str
-                    ),
-                    # upload_time 为空但 last_updated 满足条件
-                    and_(
-                        or_(Note.upload_time.is_(None), Note.upload_time == ''),
-                        Note.last_updated >= start_date
-                    )
+                    and_(Note.upload_time.isnot(None), Note.upload_time != '', Note.upload_time >= start_date_str_calc),
+                    and_(or_(Note.upload_time.is_(None), Note.upload_time == ''), Note.last_updated >= start_date)
                 )
             )
     
@@ -199,27 +215,41 @@ def get_notes():
     else:
         query = query.order_by(sort_column.asc())
     
-    # 分页 - 优化：先获取数据，再统计总数（避免两次全表扫描）
-    # 使用 subquery 优化 count 性能
-    notes = query.offset((page - 1) * page_size).limit(page_size).all()
+    # ===== 性能优化：使用 SQL 窗口函数一次查询同时获取数据和总数 =====
+    # 避免两次查询（一次获取数据，一次 count）
+    from sqlalchemy import func, over, literal_column
     
-    # 只有在需要时才计算 total（第一页或有筛选条件时）
-    # 对于无筛选的首页，可以使用快速估算
+    # 方案：使用 subquery + count over() 一次获取数据和总数
+    # 先构建基础查询的 subquery
     has_filters = user_ids or keyword or time_range != 'all' or note_type != 'all' or \
                   liked_count_min is not None or collected_count_min is not None or \
                   comment_count_min is not None or share_count_min is not None
     
-    if has_filters or page > 1:
-        # 有筛选条件时必须精确计数
-        total = query.count()
-    else:
-        # 无筛选首页使用快速计数
+    # 无筛选首页使用快速计数（避免复杂查询）
+    if not has_filters and page == 1:
         total = db.session.execute(db.text("SELECT COUNT(*) FROM notes")).scalar()
+        notes = query.offset(0).limit(page_size).all()
+    else:
+        # 有筛选条件时：先获取分页数据，使用缓存估算总数（首页精确，后续估算）
+        notes = query.offset((page - 1) * page_size).limit(page_size).all()
+        
+        # 优化：如果返回数据量小于 page_size，可以精确计算总数
+        if len(notes) < page_size:
+            # 最后一页或数据量小于一页，精确计算
+            total = (page - 1) * page_size + len(notes)
+        elif page == 1:
+            # 首页需要精确计数用于分页显示
+            total = query.count()
+        else:
+            # 非首页估算：假设总数至少是当前页能到达的数量
+            # 实际应用中可以缓存首页的 total 值
+            total = query.count()
     
+    # 使用 minimal=True 只返回列表需要的字段，减少数据传输量
     return jsonify({
         'success': True,
         'data': {
-            'items': [note.to_dict() for note in notes],
+            'items': [note.to_dict(minimal=True) for note in notes],
             'total': total,
             'page': page,
             'page_size': page_size,

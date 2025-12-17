@@ -11,7 +11,9 @@ import {
   ChevronDown,
   ChevronUp,
   FileText,
-  Loader2
+  Loader2,
+  Zap,
+  Database
 } from 'lucide-react';
 
 const ISSUE_TYPE_CONFIG = {
@@ -81,7 +83,7 @@ const SummaryCards = ({ summary }) => {
       {unprocessed > 0 && (
         <div className="bg-red-50 rounded-lg p-3 text-center">
           <div className="text-2xl font-bold text-red-600">{unprocessed}</div>
-          <div className="text-xs text-red-600">未处理</div>
+          <div className="text-xs text-red-600">不处理</div>
         </div>
       )}
     </div>
@@ -192,6 +194,19 @@ export const SyncLogModal = ({ isOpen, onClose, account }) => {
             <h3 className="text-lg font-semibold flex items-center gap-2">
               <FileText className="w-5 h-5 text-blue-500" />
               同步日志 - {account.name || account.user_id}
+              {logs.sync_mode && (
+                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${
+                  logs.sync_mode === 'deep' 
+                    ? 'bg-blue-100 text-blue-700' 
+                    : 'bg-green-100 text-green-700'
+                }`}>
+                  {logs.sync_mode === 'deep' ? (
+                    <><Database className="w-3 h-3" /> 深度同步</>
+                  ) : (
+                    <><Zap className="w-3 h-3" /> 急速同步</>
+                  )}
+                </span>
+              )}
             </h3>
             {timeStats && (
               <div className="text-xs text-gray-600 mt-1 space-y-1">

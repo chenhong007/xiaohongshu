@@ -1,9 +1,13 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { User, LogIn, LogOut, KeyRound, CheckCircle, XCircle, Clock, AlertTriangle, RefreshCw, Loader2, X } from 'lucide-react';
+import { User, LogIn, LogOut, KeyRound, CheckCircle, XCircle, Clock, AlertTriangle, RefreshCw, Loader2, X, ShieldAlert, Zap, Key } from 'lucide-react';
 import { authApi, COOKIE_INVALID_EVENT } from '../services';
+import syncWebSocket from '../services/websocket';
 
 // Cookie status changed event (from SSE sync logs)
 const COOKIE_STATUS_EVENT = 'cookie-status-changed';
+
+// 账号健康状态事件（从 WebSocket 广播）
+const ACCOUNT_HEALTH_EVENT = 'account-health-changed';
 
 // 默认头像
 const DEFAULT_AVATAR = "https://api.dicebear.com/7.x/avataaars/svg?seed=Felix";
@@ -121,6 +125,7 @@ export const UserLogin = () => {
   const [currentRunSeconds, setCurrentRunSeconds] = useState(cachedUser?.currentRunSeconds || 0);
   const [invalidInfo, setInvalidInfo] = useState(null); // 失效信息
   const [rateLimitInfo, setRateLimitInfo] = useState(null); // 限流信息
+  const [accountHealthInfo, setAccountHealthInfo] = useState(null); // 账号健康状态信息
   
   // 用于防止重复请求
   const fetchingRef = useRef(false);
@@ -232,10 +237,40 @@ export const UserLogin = () => {
     window.addEventListener(COOKIE_INVALID_EVENT, handleCookieInvalid);
     window.addEventListener(COOKIE_STATUS_EVENT, handleCookieStatusChanged);
     
+    // 监听 WebSocket 的 sync_log 事件，处理账号健康状态
+    let unsubLog = null;
+    if (syncWebSocket.isConnected()) {
+      unsubLog = syncWebSocket.on('log', (data) => {
+        // 检查是否是账号健康状态事件
+        if (data.extra?.type === 'account_health') {
+          const healthStatus = data.extra.health_status;
+          const healthMessage = data.extra.health_message || data.message;
+          const accountName = data.account_name;
+          
+          console.log('[UserLogin] Account health event:', healthStatus, healthMessage);
+          
+          // 根据健康状态更新 UI
+          if (healthStatus === 'healthy') {
+            // 状态恢复正常，清除警告
+            setAccountHealthInfo(null);
+          } else {
+            // 显示健康状态警告
+            setAccountHealthInfo({
+              status: healthStatus,
+              message: healthMessage,
+              accountName: accountName,
+              timestamp: Date.now(),
+            });
+          }
+        }
+      });
+    }
+    
     return () => {
       clearInterval(interval);
       window.removeEventListener(COOKIE_INVALID_EVENT, handleCookieInvalid);
       window.removeEventListener(COOKIE_STATUS_EVENT, handleCookieStatusChanged);
+      if (unsubLog) unsubLog();
     };
   }, [fetchUser]);
 
@@ -254,6 +289,63 @@ export const UserLogin = () => {
   const dismissRateLimitInfo = useCallback(() => {
     setRateLimitInfo(null);
   }, []);
+  
+  // 手动清除账号健康警告
+  const dismissAccountHealthInfo = useCallback(() => {
+    setAccountHealthInfo(null);
+  }, []);
+  
+  // 获取健康状态对应的图标和颜色
+  const getHealthStatusConfig = (status) => {
+    const configs = {
+      'cookie_expired': {
+        icon: XCircle,
+        color: 'red',
+        bgColor: 'bg-red-50',
+        borderColor: 'border-red-200',
+        textColor: 'text-red-700',
+        iconColor: 'text-red-500',
+        label: 'Cookie 已失效',
+      },
+      'rate_limited': {
+        icon: Zap,
+        color: 'orange',
+        bgColor: 'bg-orange-50',
+        borderColor: 'border-orange-200',
+        textColor: 'text-orange-700',
+        iconColor: 'text-orange-500',
+        label: '访问被限流',
+      },
+      'token_invalid': {
+        icon: Key,
+        color: 'yellow',
+        bgColor: 'bg-yellow-50',
+        borderColor: 'border-yellow-200',
+        textColor: 'text-yellow-700',
+        iconColor: 'text-yellow-600',
+        label: 'Token 无效',
+      },
+      'risk_control': {
+        icon: ShieldAlert,
+        color: 'red',
+        bgColor: 'bg-red-50',
+        borderColor: 'border-red-200',
+        textColor: 'text-red-700',
+        iconColor: 'text-red-500',
+        label: '账号被风控',
+      },
+      'unknown_error': {
+        icon: AlertTriangle,
+        color: 'gray',
+        bgColor: 'bg-gray-50',
+        borderColor: 'border-gray-200',
+        textColor: 'text-gray-700',
+        iconColor: 'text-gray-500',
+        label: '同步异常',
+      },
+    };
+    return configs[status] || configs['unknown_error'];
+  };
 
   // 系统登录
   const handleLogin = async () => {
@@ -400,8 +492,37 @@ export const UserLogin = () => {
 
   // 已登录状态
   if (user) {
+    // 获取账号健康状态配置
+    const healthConfig = accountHealthInfo ? getHealthStatusConfig(accountHealthInfo.status) : null;
+    const HealthIcon = healthConfig?.icon;
+    
     return (
       <div className="flex flex-col gap-2">
+        {/* 账号健康状态警告 */}
+        {accountHealthInfo && healthConfig && (
+          <div className={`flex items-start gap-2 p-2 ${healthConfig.bgColor} rounded-md border ${healthConfig.borderColor} text-xs`}>
+            <HealthIcon className={`w-4 h-4 ${healthConfig.iconColor} flex-shrink-0 mt-0.5`} />
+            <div className="flex-1 min-w-0">
+              <p className={`${healthConfig.textColor} font-medium`}>{healthConfig.label}</p>
+              {accountHealthInfo.accountName && (
+                <p className={`${healthConfig.textColor} opacity-80`}>
+                  账号: {accountHealthInfo.accountName}
+                </p>
+              )}
+              <p className={`${healthConfig.textColor} opacity-70 text-[10px] mt-0.5 break-all`}>
+                {accountHealthInfo.message}
+              </p>
+            </div>
+            <button
+              onClick={dismissAccountHealthInfo}
+              className={`${healthConfig.iconColor} opacity-60 hover:opacity-100 p-0.5 flex-shrink-0`}
+              title="关闭"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+        
         {/* 限流警告 */}
         {rateLimitInfo && (
           <div className="flex items-start gap-2 p-2 bg-orange-50 rounded-md border border-orange-200 text-xs">

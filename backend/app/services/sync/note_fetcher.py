@@ -20,6 +20,7 @@ from .retry_handler import ApiRetryHandler, ErrorType, RetryResult
 from .token_manager import XsecTokenManager
 from .delay_manager import get_adaptive_delay_manager
 from .log_collector import SyncLogCollector
+from .health_tracker import AccountHealthTracker, HealthStatus
 
 logger = get_logger('note_fetcher')
 
@@ -88,6 +89,7 @@ class NoteFetcher:
         sync_log: Optional[SyncLogCollector] = None,
         on_auth_error: Optional[Callable[[str], None]] = None,
         on_rate_limit: Optional[Callable[[], None]] = None,
+        health_tracker: Optional[AccountHealthTracker] = None,
     ):
         """初始化笔记获取器
         
@@ -98,6 +100,7 @@ class NoteFetcher:
             sync_log: 同步日志收集器（可选）
             on_auth_error: 认证错误回调（可选）
             on_rate_limit: 频率限制回调（可选）
+            health_tracker: 账号健康状态追踪器（可选）
         """
         self._spider = data_spider
         self._token_mgr = token_manager
@@ -105,6 +108,7 @@ class NoteFetcher:
         self._sync_log = sync_log
         self._on_auth_error = on_auth_error
         self._on_rate_limit = on_rate_limit
+        self._health_tracker = health_tracker
         
         # 使用 ApiRetryHandler 进行错误分类
         self._retry_handler = ApiRetryHandler(
@@ -187,6 +191,9 @@ class NoteFetcher:
                 self._log_issue(SyncLogCollector.TYPE_AUTH_ERROR, note_id, msg)
                 if self._on_auth_error:
                     self._on_auth_error(msg)
+                # 更新账号健康状态
+                if self._health_tracker:
+                    self._health_tracker.set_cookie_expired(msg)
                 return FetchResult(
                     success=False,
                     error_type=error_type,
@@ -206,6 +213,11 @@ class NoteFetcher:
                 if self._on_rate_limit:
                     self._on_rate_limit()
                 get_adaptive_delay_manager().record_rate_limit()
+                
+                # 更新账号健康状态为限流
+                if self._health_tracker:
+                    count = self._health_tracker.record_rate_limit()
+                    self._health_tracker.set_rate_limited(msg, count)
                 
                 # 频率限制需要更长的等待时间
                 wait_time = get_adaptive_delay_manager().get_rate_limit_wait()
@@ -246,9 +258,17 @@ class NoteFetcher:
                 if user_id:
                     fallback_result = self._try_token_fallback(note_id, user_id, retry_attempt)
                     if fallback_result.success:
+                        # Token 刷新成功，重置健康状态
+                        if self._health_tracker:
+                            self._health_tracker.reset_rate_limit_count()
                         return fallback_result
                     # Fallback 失败，不再重试（token 问题无法通过简单重试解决）
                     logger.warning(f"Note {note_id} 无法获取有效的 xsec_token")
+                    # 更新账号健康状态为 Token 无效
+                    if self._health_tracker:
+                        self._health_tracker.set_token_invalid(
+                            f"xsec_token 无效且无法刷新，笔记 {note_id} 获取失败"
+                        )
                     return FetchResult(
                         success=False,
                         error_type=error_type,
@@ -409,6 +429,7 @@ class BatchNoteFetcher:
         sync_log: Optional[SyncLogCollector] = None,
         on_auth_error: Optional[Callable[[str], None]] = None,
         on_rate_limit: Optional[Callable[[], None]] = None,
+        health_tracker: Optional[AccountHealthTracker] = None,
     ):
         """初始化批量获取器"""
         self._fetcher = NoteFetcher(
@@ -417,9 +438,11 @@ class BatchNoteFetcher:
             cookie_str=cookie_str,
             sync_log=sync_log,
             on_auth_error=on_auth_error,
-            on_rate_limit=on_rate_limit
+            on_rate_limit=on_rate_limit,
+            health_tracker=health_tracker
         )
         self._delay_manager = get_adaptive_delay_manager()
+        self._health_tracker = health_tracker
     
     def fetch_notes(
         self,

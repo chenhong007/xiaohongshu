@@ -10,6 +10,7 @@ from ...models import Cookie, Account
 from ...extensions import db
 from ...utils.logger import get_logger
 from ..sync_log_broadcaster import sync_log_broadcaster
+from .health_tracker import AccountHealthTracker, HealthStatus
 
 logger = get_logger('sync')
 
@@ -147,8 +148,15 @@ class AuthErrorHandler:
             account.status = 'failed'
             account.error_message = error_msg
             account.sync_heartbeat = None
+            # 更新账号健康状态为 Cookie 过期
+            account.health_status = HealthStatus.COOKIE_EXPIRED
+            account.health_message = error_msg
+            account.health_updated_at = datetime.utcnow()
             try:
                 db.session.commit()
+                # 广播健康状态变化
+                health_tracker = AccountHealthTracker(account.id, account.name or account.user_id)
+                health_tracker._broadcast_health_status(HealthStatus.COOKIE_EXPIRED, error_msg)
             except Exception as e:
                 logger.error(f"[AuthError] Failed to update account status: {e}")
                 db.session.rollback()
