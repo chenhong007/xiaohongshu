@@ -49,7 +49,7 @@ def _add_account_health_status_fields():
     
     if 'health_updated_at' not in columns:
         migrations_needed.append(
-            "ALTER TABLE accounts ADD COLUMN health_updated_at DATETIME"
+            "ALTER TABLE accounts ADD COLUMN health_updated_at TIMESTAMP"
         )
     
     if migrations_needed:
